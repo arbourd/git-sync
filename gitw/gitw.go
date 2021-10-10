@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/ldez/go-git-cmd-wrapper/v2/branch"
 	"github.com/ldez/go-git-cmd-wrapper/v2/config"
 	"github.com/ldez/go-git-cmd-wrapper/v2/git"
 	"github.com/ldez/go-git-cmd-wrapper/v2/revparse"
@@ -68,6 +69,23 @@ func HasFile(segments ...string) bool {
 		return false
 	}
 	return true
+}
+
+// RemoteFromHead gets the remote where the HEAD is.
+func RemoteFromHead() (string, error) {
+	// git branch -r
+	remotes, err := git.Branch(branch.Remotes)
+	if err != nil {
+		return "", err
+	}
+
+	r := regexp.MustCompile(`([\w\d]+)\/HEAD`)
+	match := r.FindAllStringSubmatch(remotes, -1)
+
+	if len(match) < 1 || len(match[0]) < 2 {
+		return "", fmt.Errorf("could not find a remote")
+	}
+	return match[0][1], nil
 }
 
 // BranchesWithRemotes uses the Git config to determine which branches also exist on the remotes.

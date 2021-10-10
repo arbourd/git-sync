@@ -28,7 +28,11 @@ func sync() error {
 		return fmt.Errorf("not a git repository")
 	}
 
-	remote := "origin"
+	remote, err := gitw.RemoteFromHead()
+	if err != nil {
+		return err
+	}
+
 	defaultBranch, err := gitw.DefaultBranch(remote)
 	if err != nil {
 		return err
