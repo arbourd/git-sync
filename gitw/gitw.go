@@ -80,12 +80,12 @@ func RemoteFromHead() (string, error) {
 	}
 
 	r := regexp.MustCompile(`([\w\d]+)\/HEAD`)
-	match := r.FindAllStringSubmatch(remotes, -1)
+	match := r.FindStringSubmatch(remotes)
 
-	if len(match) < 1 || len(match[0]) < 2 {
+	if len(match[0]) < 2 {
 		return "", fmt.Errorf("could not find a remote")
 	}
-	return match[0][1], nil
+	return match[1], nil
 }
 
 // BranchesWithRemotes uses the Git config to determine which branches also exist on the remotes.
