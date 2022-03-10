@@ -4,24 +4,11 @@
 
 ## Installation
 
-Install with `gofish`.
-
-```console
-$ gofish rig add https://github.com/arbourd/rig
-$ gofish install git-sync
-```
-
 Install with `brew`.
 
 ```console
 $ brew tap arbourd/tap
 $ brew install git-sync
-```
-
-Install with `go get`.
-
-```console
-$ go get -u github.com/arbourd/git-sync
 ```
 
 ## Usage
