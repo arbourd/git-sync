@@ -1,8 +1,3 @@
-env:
-  - GO111MODULE=on
-before:
-  hooks:
-    - go mod download
 builds:
   - env:
       - CGO_ENABLED=0
@@ -13,10 +8,23 @@ builds:
     goarch:
       - amd64
       - arm64
+
 checksum:
   name_template: 'checksums.txt'
+
 archives:
   - name_template: '{{ .ProjectName }}-v{{ .Version }}-{{ .Os }}-{{ .Arch }}'
     format_overrides:
       - goos: windows
         format: zip
+
+brews:
+  - name: git-sync
+    description: Updates your branches
+    homepage: https://github.com/arbourd/git-sync
+    folder: Formula
+
+    tap:
+      owner: arbourd
+      name: homebrew-tap
+      token: '{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}'
