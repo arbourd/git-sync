@@ -24,4 +24,5 @@ jobs:
           go-version: 1.18
 
       - run: go mod download
-      - run: go build .
+      - run: go build -o git-sync .
+      - run: ./git-sync
