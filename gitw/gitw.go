@@ -82,7 +82,7 @@ func RemoteFromHead() (string, error) {
 	r := regexp.MustCompile(`([\w\d]+)\/HEAD`)
 	match := r.FindStringSubmatch(remotes)
 
-	if len(match[0]) < 2 {
+	if len(match) < 2 {
 		return "", fmt.Errorf("could not find a remote")
 	}
 	return match[1], nil
