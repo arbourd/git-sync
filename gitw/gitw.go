@@ -45,16 +45,12 @@ func (r *Range) IsAncestor() bool {
 		g.AddOptions(r.A)
 		g.AddOptions(r.B)
 	})
-
-	if err != nil {
-		return false
-	}
-	return true
+	return err == nil
 }
 
 func HasFile(segments ...string) bool {
 	// The blessed way to resolve paths within git dir since Git 2.5.0
-	// pathCmd := gitCmd("rev-parse", "-q", "--git-path", filepath.Join(segments...))
+	// git rev-parse -q --git-path <filepath.Join(segments...)>
 	out, err := git.RevParse(revparse.Quiet, revparse.GitPath(filepath.Join(segments...)))
 	if err != nil {
 		return false
@@ -159,11 +155,7 @@ func DefaultBranch(remote string) (string, error) {
 func IsGitDir() bool {
 	// git rev-parse --git-dir
 	_, err := git.RevParse(revparse.GitDir)
-	if err != nil {
-		return false
-	}
-
-	return true
+	return err == nil
 }
 
 func outputLines(output string) []string {
