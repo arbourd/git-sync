@@ -25,7 +25,7 @@ brews:
 
     folder: Formula
 
-    tap:
+    repository:
       owner: arbourd
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
