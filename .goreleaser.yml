@@ -23,6 +23,10 @@ brews:
     description: Updates your branches
     homepage: https://github.com/arbourd/git-sync
 
+    conflicts:
+      - git-extras
+      - git-sync
+
     folder: Formula
 
     repository:
