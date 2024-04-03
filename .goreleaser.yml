@@ -38,7 +38,7 @@ brews:
       - git-extras
       - git-sync
 
-    folder: Formula
+    directory: Formula
 
     repository:
       owner: arbourd
