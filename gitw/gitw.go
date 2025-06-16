@@ -1,6 +1,7 @@
 package gitw
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ func NewRange(a, b string) (*Range, error) {
 	// git rev-parse --quiet <a> <b>
 	out, err := git.RevParse(revparse.Quiet, revparse.Args(a, b))
 	if err != nil {
-		return nil, fmt.Errorf(out)
+		return nil, errors.New(out)
 	}
 
 	lines := outputLines(out)
@@ -90,7 +91,7 @@ func BranchesWithRemotes() (map[string]string, error) {
 	// git config --get-regexp 'branch.*.remote'
 	out, err := git.Config(config.GetRegexp("branch.*.remote", ""))
 	if err != nil {
-		return map[string]string{}, fmt.Errorf(out)
+		return map[string]string{}, errors.New(out)
 	}
 	lines := outputLines(out)
 
@@ -113,7 +114,7 @@ func LocalBranches() ([]string, error) {
 		g.AddOptions("refs/heads/")
 	})
 	if err != nil {
-		return []string{}, fmt.Errorf(out)
+		return []string{}, errors.New(out)
 	}
 
 	lines := outputLines(out)
@@ -144,7 +145,7 @@ func DefaultBranch(remote string) (string, error) {
 		g.AddOptions(ref)
 	})
 	if err != nil {
-		return "", fmt.Errorf(out)
+		return "", errors.New(out)
 	}
 
 	branch := strings.Replace(strings.TrimSpace(out), fmt.Sprintf("refs/remotes/%s/", remote), "", 1)

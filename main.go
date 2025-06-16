@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -40,10 +41,10 @@ func sync() error {
 	fullDefaultBranch := fmt.Sprintf("refs/remotes/%s/%s", remote, defaultBranch)
 	currentBranch := gitw.CurrentBranch()
 
-	// git fetch --prune --quiet --progress <remote>
-	out, err := git.Fetch(fetch.Quiet, fetch.Prune, fetch.Progress, fetch.Remote(remote))
+	// git fetch --prune --progress <remote>
+	out, err := git.Fetch(fetch.Prune, fetch.Progress, fetch.Remote(remote))
 	if err != nil {
-		return fmt.Errorf(out)
+		return errors.New(out)
 	}
 
 	branches, err := gitw.LocalBranches()
@@ -100,7 +101,7 @@ func sync() error {
 					// git merge --ff-only --quiet <remoteBranch>
 					out, err := git.Merge(merge.FfOnly, merge.Quiet, merge.Commits(remoteBranch))
 					if err != nil {
-						return fmt.Errorf(out)
+						return errors.New(out)
 					}
 				} else {
 					// git update-ref <fullBranch> <remoteBranch>
@@ -109,7 +110,7 @@ func sync() error {
 						g.AddOptions(remoteBranch)
 					})
 					if err != nil {
-						return fmt.Errorf(out)
+						return errors.New(out)
 					}
 				}
 				fmt.Printf("%sUpdated branch %s%s%s (was %s).\n", green, lightGreen, wbranch, resetColor, diff.A[0:7])
@@ -127,7 +128,7 @@ func sync() error {
 					// git checkout --quiet <defaultBranch>
 					out, err := git.Checkout(checkout.Quiet, checkout.Branch(defaultBranch))
 					if err != nil {
-						return fmt.Errorf(out)
+						return errors.New(out)
 					}
 					currentBranch = defaultBranch
 				}
@@ -135,7 +136,7 @@ func sync() error {
 				// git branch -D <wbranch>
 				out, err := git.Branch(branch.Delete, branch.BranchName(wbranch))
 				if err != nil {
-					return fmt.Errorf(out)
+					return errors.New(out)
 				}
 				fmt.Printf("%sDeleted branch %s%s%s (was %s).\n", red, lightRed, wbranch, resetColor, diff.A[0:7])
 			} else {
