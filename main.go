@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/arbourd/git-sync/gitw"
+	"github.com/arbourd/git-sync/internal/gitw"
 	"github.com/ldez/go-git-cmd-wrapper/v2/branch"
 	"github.com/ldez/go-git-cmd-wrapper/v2/checkout"
 	"github.com/ldez/go-git-cmd-wrapper/v2/fetch"

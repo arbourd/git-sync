@@ -3,8 +3,6 @@ package gitw
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -15,6 +13,7 @@ import (
 	"github.com/ldez/go-git-cmd-wrapper/v2/types"
 )
 
+// NewRange resolves a and b to a Range.
 func NewRange(a, b string) (*Range, error) {
 	// git rev-parse --quiet <a> <b>
 	out, err := git.RevParse(revparse.Quiet, revparse.Args(a, b))
@@ -30,15 +29,18 @@ func NewRange(a, b string) (*Range, error) {
 	return &Range{lines[0], lines[1]}, nil
 }
 
+// Range is a pair of resolved revisions.
 type Range struct {
 	A string
 	B string
 }
 
+// IsIdentical reports whether A and B are the same revision.
 func (r *Range) IsIdentical() bool {
 	return strings.EqualFold(r.A, r.B)
 }
 
+// IsAncestor reports whether A is an ancestor of B.
 func (r *Range) IsAncestor() bool {
 	// git merge-base --is-ancestor <r.A> <r.B>
 	_, err := git.Raw("merge-base", func(g *types.Cmd) {
@@ -49,23 +51,13 @@ func (r *Range) IsAncestor() bool {
 	return err == nil
 }
 
+// HasFile reports whether the ref named by joining segments with "/" exists.
 func HasFile(segments ...string) bool {
-	// The blessed way to resolve paths within git dir since Git 2.5.0
-	// git rev-parse -q --git-path <filepath.Join(segments...)>
-	out, err := git.RevParse(revparse.Quiet, revparse.GitPath(filepath.Join(segments...)))
-	if err != nil {
-		return false
-	}
+	ref := strings.Join(segments, "/")
 
-	lines := outputLines(out)
-	if len(lines) != 1 {
-		return false
-	}
-
-	if _, err := os.Stat(lines[0]); err != nil {
-		return false
-	}
-	return true
+	// git rev-parse --quiet --verify <ref>
+	_, err := git.RevParse(revparse.Quiet, revparse.Verify, revparse.Args(ref))
+	return err == nil
 }
 
 // RemoteFromHead gets the remote where the HEAD is.
@@ -85,8 +77,7 @@ func RemoteFromHead() (string, error) {
 	return match[1], nil
 }
 
-// BranchesWithRemotes uses the Git config to determine which branches also exist on the remotes.
-// Returns a list of branches.
+// BranchesWithRemotes returns a map of local branches to their remote.
 func BranchesWithRemotes() (map[string]string, error) {
 	// git config --get-regexp 'branch.*.remote'
 	out, err := git.Config(config.GetRegexp("branch.*.remote", ""))

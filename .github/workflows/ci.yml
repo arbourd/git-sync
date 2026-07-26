@@ -26,7 +26,9 @@ jobs:
           go-version-file: go.mod
 
       - run: go mod download
+      - run: go vet ./...
       - run: go build .
+      - run: go test ./... -race
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
