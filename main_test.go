@@ -187,6 +187,37 @@ func TestSync_UntrackedBranchWithoutMatchingRemoteIsUntouched(t *testing.T) {
 	}
 }
 
+func TestSync_ForceMovedTagIsIgnored(t *testing.T) {
+	remote := gittest.NewBare(t)
+	peer := remote.Clone(t)
+	local := remote.Clone(t)
+
+	// Reproduces the failure: fetch.pruneTags hard-fails on a moved tag.
+	local.Git(t, "config", "fetch.pruneTags", "true")
+
+	peer.Git(t, "tag", "nightly")
+	peer.Push(t, "origin", "nightly")
+
+	// Cache the tag locally at its original commit.
+	local.Git(t, "fetch", "origin", "tag", "nightly")
+
+	// Force-move the tag upstream, as a rolling release tag would.
+	newSHA := peer.Commit(t, "new nightly commit")
+	peer.Push(t, "origin", "main")
+	peer.Git(t, "tag", "-f", "nightly")
+	peer.Push(t, "origin", "nightly", "--force")
+
+	local.Chdir(t)
+
+	if err := sync(); err != nil {
+		t.Fatalf("sync() error: %v, want nil (force-moved tags should not fail sync)", err)
+	}
+
+	if got := local.Git(t, "rev-parse", "refs/remotes/origin/main"); got != newSHA {
+		t.Fatalf("local refs/remotes/origin/main = %q, want %q", got, newSHA)
+	}
+}
+
 func TestSync_UnpushedCommitsWarnsAndKeeps(t *testing.T) {
 	remote := gittest.NewBare(t)
 	local := remote.Clone(t)
