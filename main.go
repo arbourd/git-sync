@@ -41,8 +41,9 @@ func sync() error {
 	fullDefaultBranch := fmt.Sprintf("refs/remotes/%s/%s", remote, defaultBranch)
 	currentBranch := gitw.CurrentBranch()
 
-	// git fetch --prune --progress <remote>
-	out, err := git.Fetch(fetch.Prune, fetch.Progress, fetch.Remote(remote))
+	// git fetch --prune --progress --no-tags --no-prune-tags <remote>
+	noPruneTags := func(g *types.Cmd) { g.AddOptions("--no-prune-tags") }
+	out, err := git.Fetch(fetch.Prune, fetch.Progress, fetch.NoTags, noPruneTags, fetch.Remote(remote))
 	if err != nil {
 		return errors.New(out)
 	}
