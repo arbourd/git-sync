@@ -7,8 +7,11 @@ import (
 	"strings"
 
 	"github.com/ldez/go-git-cmd-wrapper/v2/branch"
+	"github.com/ldez/go-git-cmd-wrapper/v2/checkout"
 	"github.com/ldez/go-git-cmd-wrapper/v2/config"
+	"github.com/ldez/go-git-cmd-wrapper/v2/fetch"
 	"github.com/ldez/go-git-cmd-wrapper/v2/git"
+	"github.com/ldez/go-git-cmd-wrapper/v2/merge"
 	"github.com/ldez/go-git-cmd-wrapper/v2/revparse"
 	"github.com/ldez/go-git-cmd-wrapper/v2/types"
 )
@@ -148,6 +151,73 @@ func IsGitDir() bool {
 	// git rev-parse --git-dir
 	_, err := git.RevParse(revparse.GitDir)
 	return err == nil
+}
+
+// Fetch fetches and prunes remote without touching tags.
+//
+// Tags are skipped because a force-moved tag makes fetch.pruneTags hard-fail.
+func Fetch(remote string) error {
+	// git fetch --prune --progress --no-tags --no-prune-tags <remote>
+	noPruneTags := func(g *types.Cmd) { g.AddOptions("--no-prune-tags") }
+	out, err := git.Fetch(fetch.Prune, fetch.Progress, fetch.NoTags, noPruneTags, fetch.Remote(remote))
+	if err != nil {
+		return errors.New(out)
+	}
+	return nil
+}
+
+// Upstream returns the full upstream ref of branch (like refs/remotes/origin/main).
+// It errors if the branch has no upstream, including when it was deleted on the remote.
+func Upstream(branch string) (string, error) {
+	// git rev-parse --symbolic-full-name <branch>@{upstream}
+	out, err := git.RevParse(revparse.SymbolicFullName, revparse.Args(branch+"@{upstream}"))
+	if err != nil {
+		return "", errors.New(out)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// FastForwardCurrent fast-forwards the checked out branch to ref.
+func FastForwardCurrent(ref string) error {
+	// git merge --ff-only --quiet <ref>
+	out, err := git.Merge(merge.FfOnly, merge.Quiet, merge.Commits(ref))
+	if err != nil {
+		return errors.New(out)
+	}
+	return nil
+}
+
+// UpdateRef points ref at target.
+func UpdateRef(ref, target string) error {
+	// git update-ref <ref> <target>
+	out, err := git.Raw("update-ref", func(g *types.Cmd) {
+		g.AddOptions(ref)
+		g.AddOptions(target)
+	})
+	if err != nil {
+		return errors.New(out)
+	}
+	return nil
+}
+
+// Checkout switches to the named branch.
+func Checkout(name string) error {
+	// git checkout --quiet <name>
+	out, err := git.Checkout(checkout.Quiet, checkout.Branch(name))
+	if err != nil {
+		return errors.New(out)
+	}
+	return nil
+}
+
+// DeleteBranch force-deletes the named local branch.
+func DeleteBranch(name string) error {
+	// git branch -D <name>
+	out, err := git.Branch(branch.DeleteForce, branch.BranchName(name))
+	if err != nil {
+		return errors.New(out)
+	}
+	return nil
 }
 
 func outputLines(output string) []string {

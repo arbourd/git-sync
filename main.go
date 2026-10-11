@@ -7,26 +7,38 @@ import (
 	"strings"
 
 	"github.com/arbourd/git-sync/internal/gitw"
-	"github.com/ldez/go-git-cmd-wrapper/v2/branch"
-	"github.com/ldez/go-git-cmd-wrapper/v2/checkout"
-	"github.com/ldez/go-git-cmd-wrapper/v2/fetch"
-	"github.com/ldez/go-git-cmd-wrapper/v2/git"
-	"github.com/ldez/go-git-cmd-wrapper/v2/merge"
-	"github.com/ldez/go-git-cmd-wrapper/v2/revparse"
-	"github.com/ldez/go-git-cmd-wrapper/v2/types"
+)
+
+const (
+	green      = "\033[32m"
+	lightGreen = "\033[32;1m"
+	red        = "\033[31m"
+	lightRed   = "\033[31;1m"
+	resetColor = "\033[0m"
 )
 
 func main() {
-	err := sync()
-	if err != nil {
-		fmt.Printf("fatal: %s\n", strings.TrimPrefix(strings.TrimSpace(err.Error()), "fatal: "))
+	if err := sync(); err != nil {
+		fmt.Printf("fatal: %s\n", formatError(err))
 		os.Exit(1)
 	}
 }
 
+// formatError trims err and strips a leading "fatal: ".
+func formatError(err error) string {
+	return strings.TrimPrefix(strings.TrimSpace(err.Error()), "fatal: ")
+}
+
+// syncer holds state shared across branches.
+type syncer struct {
+	remote        string
+	defaultBranch string
+	currentBranch string
+}
+
 func sync() error {
-	if gitDir := gitw.IsGitDir(); !gitDir {
-		return fmt.Errorf("not a git repository")
+	if !gitw.IsGitDir() {
+		return errors.New("not a git repository")
 	}
 
 	remote, err := gitw.RemoteFromHead()
@@ -38,14 +50,15 @@ func sync() error {
 	if err != nil {
 		return err
 	}
-	fullDefaultBranch := fmt.Sprintf("refs/remotes/%s/%s", remote, defaultBranch)
-	currentBranch := gitw.CurrentBranch()
 
-	// git fetch --prune --progress --no-tags --no-prune-tags <remote>
-	noPruneTags := func(g *types.Cmd) { g.AddOptions("--no-prune-tags") }
-	out, err := git.Fetch(fetch.Prune, fetch.Progress, fetch.NoTags, noPruneTags, fetch.Remote(remote))
-	if err != nil {
-		return errors.New(out)
+	s := &syncer{
+		remote:        remote,
+		defaultBranch: defaultBranch,
+		currentBranch: gitw.CurrentBranch(),
+	}
+
+	if err := gitw.Fetch(remote); err != nil {
+		return err
 	}
 
 	branches, err := gitw.LocalBranches()
@@ -53,98 +66,110 @@ func sync() error {
 		return err
 	}
 
-	var green,
-		lightGreen,
-		red,
-		lightRed,
-		resetColor string
-
-	colorize := true
-	if colorize {
-		green = "\033[32m"
-		lightGreen = "\033[32;1m"
-		red = "\033[31m"
-		lightRed = "\033[31;1m"
-		resetColor = "\033[0m"
-	}
-
-	branchToRemote, err := gitw.BranchesWithRemotes()
+	tracking, err := gitw.BranchesWithRemotes()
 	if err != nil {
 		return err
 	}
 
-	for _, wbranch := range branches {
-		fullBranch := fmt.Sprintf("refs/heads/%s", wbranch)
-		remoteBranch := fmt.Sprintf("refs/remotes/%s/%s", remote, wbranch)
-		gone := false
+	for _, branch := range branches {
+		upstream, gone := s.upstream(branch, tracking[branch] == s.remote)
 
-		if branchToRemote[wbranch] == remote {
-			if upstream, err := git.RevParse(revparse.SymbolicFullName, revparse.Args(fmt.Sprintf("%s@{upstream}", wbranch))); err == nil {
-				remoteBranch = strings.TrimSpace(upstream)
-			} else {
-				remoteBranch = ""
-				gone = true
-			}
-		} else if !gitw.HasFile(strings.Split(remoteBranch, "/")...) {
-			remoteBranch = ""
+		var err error
+		switch {
+		case upstream != "":
+			err = s.update(branch, upstream)
+		case gone:
+			err = s.prune(branch)
 		}
-
-		if remoteBranch != "" {
-			diff, err := gitw.NewRange(fullBranch, remoteBranch)
-			if err != nil {
-				return err
-			}
-
-			if diff.IsIdentical() {
-				continue
-			} else if diff.IsAncestor() {
-				if wbranch == currentBranch {
-					// git merge --ff-only --quiet <remoteBranch>
-					out, err := git.Merge(merge.FfOnly, merge.Quiet, merge.Commits(remoteBranch))
-					if err != nil {
-						return errors.New(out)
-					}
-				} else {
-					// git update-ref <fullBranch> <remoteBranch>
-					out, err := git.Raw("update-ref", func(g *types.Cmd) {
-						g.AddOptions(fullBranch)
-						g.AddOptions(remoteBranch)
-					})
-					if err != nil {
-						return errors.New(out)
-					}
-				}
-				fmt.Printf("%sUpdated branch %s%s%s (was %s).\n", green, lightGreen, wbranch, resetColor, diff.A[0:7])
-			} else {
-				fmt.Printf("warning: '%s' seems to contain unpushed commits\n", wbranch)
-			}
-		} else if gone {
-			diff, err := gitw.NewRange(fullBranch, fullDefaultBranch)
-			if err != nil {
-				return err
-			}
-
-			if diff.IsAncestor() {
-				if wbranch == currentBranch {
-					// git checkout --quiet <defaultBranch>
-					out, err := git.Checkout(checkout.Quiet, checkout.Branch(defaultBranch))
-					if err != nil {
-						return errors.New(out)
-					}
-					currentBranch = defaultBranch
-				}
-
-				// git branch -D <wbranch>
-				out, err := git.Branch(branch.Delete, branch.BranchName(wbranch))
-				if err != nil {
-					return errors.New(out)
-				}
-				fmt.Printf("%sDeleted branch %s%s%s (was %s).\n", red, lightRed, wbranch, resetColor, diff.A[0:7])
-			} else {
-				fmt.Printf("warning: '%s' was deleted on %s, but appears not merged into '%s'\n", wbranch, remote, defaultBranch)
-			}
+		if err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+// upstream returns the remote ref branch should match.
+// gone is true if a tracked branch's upstream was deleted.
+func (s *syncer) upstream(branch string, tracked bool) (upstream string, gone bool) {
+	if tracked {
+		upstream, err := gitw.Upstream(branch)
+		return upstream, err != nil
+	}
+
+	candidate := fmt.Sprintf("refs/remotes/%s/%s", s.remote, branch)
+	if gitw.HasFile(candidate) {
+		return candidate, false
+	}
+	return "", false
+}
+
+// update fast-forwards branch to upstream, or warns if it has local commits.
+func (s *syncer) update(branch, upstream string) error {
+	ref := localRef(branch)
+	diff, err := gitw.NewRange(ref, upstream)
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case diff.IsIdentical():
+		return nil
+	case !diff.IsAncestor():
+		fmt.Printf("warning: '%s' seems to contain unpushed commits\n", branch)
+		return nil
+	}
+
+	if branch == s.currentBranch {
+		err = gitw.FastForwardCurrent(upstream)
+	} else {
+		err = gitw.UpdateRef(ref, upstream)
+	}
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%sUpdated branch %s%s%s (was %s).\n", green, lightGreen, branch, resetColor, shortSHA(diff.A))
+	return nil
+}
+
+// prune deletes branch if it is merged into the default branch.
+func (s *syncer) prune(branch string) error {
+	defaultRef := fmt.Sprintf("refs/remotes/%s/%s", s.remote, s.defaultBranch)
+	diff, err := gitw.NewRange(localRef(branch), defaultRef)
+	if err != nil {
+		return err
+	}
+
+	if !diff.IsAncestor() {
+		fmt.Printf("warning: '%s' was deleted on %s, but appears not merged into '%s'\n", branch, s.remote, s.defaultBranch)
+		return nil
+	}
+
+	// Can't delete the checked out branch.
+	if branch == s.currentBranch {
+		if err := gitw.Checkout(s.defaultBranch); err != nil {
+			return err
+		}
+		s.currentBranch = s.defaultBranch
+	}
+
+	if err := gitw.DeleteBranch(branch); err != nil {
+		return err
+	}
+
+	fmt.Printf("%sDeleted branch %s%s%s (was %s).\n", red, lightRed, branch, resetColor, shortSHA(diff.A))
+	return nil
+}
+
+func localRef(branch string) string {
+	return "refs/heads/" + branch
+}
+
+// shortSHA returns the first 7 characters of rev.
+func shortSHA(rev string) string {
+	if len(rev) <= 7 {
+		return rev
+	}
+	return rev[:7]
 }
