@@ -13,8 +13,13 @@ ref exists (usually
 then walks every local branch.
 A branch that is behind its upstream, or behind the same-named branch on that
 remote, is fast-forwarded.
-A branch whose upstream was deleted is removed if it is merged into the
-default branch.
+A branch whose upstream was deleted is removed only with
+.BR \-\-prune ,
+and only if its changes are in the default branch, whether merged, rebased,
+or squashed (requires git 2.40 or newer).
+Without
+.BR \-\-prune ,
+no branch is ever deleted.
 .PP
 Branches with unpushed commits, and deleted branches that are not merged,
 are left alone and reported with a warning.
@@ -25,12 +30,17 @@ Tags are neither fetched nor pruned.
 .BR \-h ", " \-\-help
 Print usage information and exit.
 .TP
+.B \-\-prune
+Delete merged branches whose upstream is gone.
+.TP
 .BR \-v ", " \-\-version
 Print the version and exit.
 .SH EXAMPLES
 .EX
 $ git sync
 Updated branch main (was 8915328).
+warning: 'feature-123' was deleted on origin
+$ git sync --prune
 Deleted branch feature-123 (was 7c24329).
 .EE
 .SH SEE ALSO
