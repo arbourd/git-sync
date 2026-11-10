@@ -478,3 +478,46 @@ func TestSync_FetchFailureReturnsErrorAndKeepsBranches(t *testing.T) {
 		t.Fatalf("local refs/heads/main = %q, want unchanged %q", got, wantSHA)
 	}
 }
+
+func TestProcessArgs(t *testing.T) {
+	tests := map[string]struct {
+		args       []string
+		wantDone   bool
+		wantStdout string
+		wantErr    string
+	}{
+		"no args":            {},
+		"help":               {args: []string{"-h"}, wantDone: true, wantStdout: usage + "\n"},
+		"long help":          {args: []string{"--help"}, wantDone: true, wantStdout: usage + "\n"},
+		"version":            {args: []string{"--version"}, wantDone: true, wantStdout: "git-sync dev\n"},
+		"short version":      {args: []string{"-v"}, wantDone: true, wantStdout: "git-sync dev\n"},
+		"help wins":          {args: []string{"--bogus", "-h", "-v"}, wantDone: true, wantStdout: usage + "\n"},
+		"help after --":      {args: []string{"--", "-h"}, wantErr: `too many arguments: "-h"`},
+		"unknown long":       {args: []string{"--bogus"}, wantErr: `unknown option "--bogus"`},
+		"unknown short":      {args: []string{"-x"}, wantErr: `unknown option "-x"`},
+		"-- alone":           {args: []string{"--"}},
+		"-- with dash path":  {args: []string{"--", "-foo"}, wantErr: `too many arguments: "-foo"`},
+		"too many arguments": {args: []string{"origin"}, wantErr: `too many arguments: "origin"`},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var out strings.Builder
+			done, err := processArgs(tt.args, &out)
+			if done != tt.wantDone {
+				t.Errorf("done = %v, want %v", done, tt.wantDone)
+			}
+			if out.String() != tt.wantStdout {
+				t.Errorf("stdout = %q, want %q", out.String(), tt.wantStdout)
+			}
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Errorf("unexpected error: %v", err)
+			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+				t.Errorf("error = %v, want containing %q", err, tt.wantErr)
+			case tt.wantErr != "" && !strings.Contains(err.Error(), usage):
+				t.Errorf("error missing usage text: %v", err)
+			}
+		})
+	}
+}

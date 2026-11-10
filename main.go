@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -17,11 +18,60 @@ const (
 	resetColor = "\033[0m"
 )
 
+// Version is set via -ldflags at build time.
+var Version = "dev"
+
+const usage = `Usage: git-sync [options]
+
+Update all local branches from their remotes.
+
+Options:
+  -h, --help     Show this help message
+  -v, --version  Show version`
+
 func main() {
-	if err := sync(); err != nil {
-		fmt.Printf("fatal: %s\n", formatError(err))
+	done, err := processArgs(os.Args[1:], os.Stdout)
+	if err == nil && !done {
+		err = sync()
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %s\n", formatError(err))
 		os.Exit(1)
 	}
+}
+
+// processArgs reports done if it printed help or the version.
+// Help and version win wherever they appear before "--".
+func processArgs(args []string, stdout io.Writer) (done bool, err error) {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		switch a {
+		case "-h", "--help":
+			_, err = fmt.Fprintln(stdout, usage)
+			return true, err
+		case "-v", "--version":
+			_, err = fmt.Fprintf(stdout, "git-sync %s\n", Version)
+			return true, err
+		}
+	}
+
+	// No positional arguments.
+	for i, a := range args {
+		switch {
+		case a == "--":
+			if i+1 < len(args) {
+				return false, fmt.Errorf("too many arguments: %q\n\n%s", args[i+1], usage)
+			}
+			return false, nil
+		case strings.HasPrefix(a, "-"):
+			return false, fmt.Errorf("unknown option %q\n\n%s", a, usage)
+		default:
+			return false, fmt.Errorf("too many arguments: %q\n\n%s", a, usage)
+		}
+	}
+	return false, nil
 }
 
 // formatError trims err and strips a leading "fatal: ".
