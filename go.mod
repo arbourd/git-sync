@@ -1,5 +1,5 @@
 module github.com/arbourd/git-sync
 
-go 1.26
+go 1.27.4
 
 require github.com/ldez/go-git-cmd-wrapper/v2 v2.9.1
