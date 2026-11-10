@@ -26,13 +26,14 @@ const usage = `Usage: git-sync [options]
 Update all local branches from their remotes.
 
 Options:
+      --prune    Delete merged branches whose upstream is gone
   -h, --help     Show this help message
   -v, --version  Show version`
 
 func main() {
-	done, err := processArgs(os.Args[1:], os.Stdout)
-	if err == nil && !done {
-		err = sync()
+	opts, err := processArgs(os.Args[1:], os.Stdout)
+	if err == nil && !opts.done {
+		err = sync(opts.prune)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %s\n", formatError(err))
@@ -40,9 +41,16 @@ func main() {
 	}
 }
 
-// processArgs reports done if it printed help or the version.
+// options are the parsed command line. done means help or the version was
+// printed and there is nothing left to do.
+type options struct {
+	prune bool
+	done  bool
+}
+
+// processArgs parses args, printing help or the version to stdout if asked.
 // Help and version win wherever they appear before "--".
-func processArgs(args []string, stdout io.Writer) (done bool, err error) {
+func processArgs(args []string, stdout io.Writer) (opts options, err error) {
 	for _, a := range args {
 		if a == "--" {
 			break
@@ -50,28 +58,30 @@ func processArgs(args []string, stdout io.Writer) (done bool, err error) {
 		switch a {
 		case "-h", "--help":
 			_, err = fmt.Fprintln(stdout, usage)
-			return true, err
+			return options{done: true}, err
 		case "-v", "--version":
 			_, err = fmt.Fprintf(stdout, "git-sync %s\n", Version)
-			return true, err
+			return options{done: true}, err
 		}
 	}
 
 	// No positional arguments.
 	for i, a := range args {
 		switch {
+		case a == "--prune":
+			opts.prune = true
 		case a == "--":
 			if i+1 < len(args) {
-				return false, fmt.Errorf("too many arguments: %q\n\n%s", args[i+1], usage)
+				return options{}, fmt.Errorf("too many arguments: %q\n\n%s", args[i+1], usage)
 			}
-			return false, nil
+			return opts, nil
 		case strings.HasPrefix(a, "-"):
-			return false, fmt.Errorf("unknown option %q\n\n%s", a, usage)
+			return options{}, fmt.Errorf("unknown option %q\n\n%s", a, usage)
 		default:
-			return false, fmt.Errorf("too many arguments: %q\n\n%s", a, usage)
+			return options{}, fmt.Errorf("too many arguments: %q\n\n%s", a, usage)
 		}
 	}
-	return false, nil
+	return opts, nil
 }
 
 // formatError trims err and strips a leading "fatal: ".
@@ -87,7 +97,7 @@ type syncer struct {
 	worktrees     map[string]string // branch -> worktree path
 }
 
-func sync() error {
+func sync(prune bool) error {
 	if !gitw.IsGitDir() {
 		return errors.New("not a git repository")
 	}
@@ -131,12 +141,13 @@ func sync() error {
 	for _, branch := range branches {
 		upstream, gone := s.upstream(branch, tracking[branch] == s.remote)
 
-		var err error
 		switch {
 		case upstream != "":
 			err = s.update(branch, upstream)
-		case gone:
+		case gone && prune:
 			err = s.prune(branch)
+		case gone:
+			fmt.Printf("warning: '%s' was deleted on %s\n", branch, s.remote)
 		}
 		if err != nil {
 			return err
@@ -151,7 +162,8 @@ func sync() error {
 func (s *syncer) upstream(branch string, tracked bool) (upstream string, gone bool) {
 	if tracked {
 		upstream, err := gitw.Upstream(branch)
-		return upstream, err != nil
+		// Without a configured upstream, there was nothing to lose.
+		return upstream, err != nil && gitw.HasMergeConfig(branch)
 	}
 
 	candidate := fmt.Sprintf("refs/remotes/%s/%s", s.remote, branch)
@@ -204,7 +216,7 @@ func (s *syncer) elsewhere(branch string) (dir string, ok bool) {
 	return dir, ok && branch != s.currentBranch
 }
 
-// prune deletes branch if it is merged into the default branch.
+// prune deletes branch if it is merged (including rebased or squashed) into the default branch.
 func (s *syncer) prune(branch string) error {
 	defaultRef := fmt.Sprintf("refs/remotes/%s/%s", s.remote, s.defaultBranch)
 	diff, err := gitw.NewRange(localRef(branch), defaultRef)
@@ -212,7 +224,7 @@ func (s *syncer) prune(branch string) error {
 		return err
 	}
 
-	if !diff.IsAncestor() {
+	if !diff.IsAncestor() && !gitw.IsApplied(localRef(branch), defaultRef) {
 		fmt.Printf("warning: '%s' was deleted on %s, but appears not merged into '%s'\n", branch, s.remote, s.defaultBranch)
 		return nil
 	}
