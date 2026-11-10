@@ -1,0 +1,38 @@
+.TH GIT-SYNC 1 "2026-11-10" "git-sync" "User Commands"
+.SH NAME
+git-sync \- update all local branches from their remotes
+.SH SYNOPSIS
+.B git-sync
+.RI [ options ]
+.SH DESCRIPTION
+.B git-sync
+fetches and prunes the remote whose
+.I <remote>/HEAD
+ref exists (usually
+.BR origin ),
+then walks every local branch.
+A branch that is behind its upstream, or behind the same-named branch on that
+remote, is fast-forwarded.
+A branch whose upstream was deleted is removed if it is merged into the
+default branch.
+.PP
+Branches with unpushed commits, and deleted branches that are not merged,
+are left alone and reported with a warning.
+.PP
+Tags are neither fetched nor pruned.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Print usage information and exit.
+.TP
+.BR \-v ", " \-\-version
+Print the version and exit.
+.SH EXAMPLES
+.EX
+$ git sync
+Updated branch main (was 8915328).
+Deleted branch feature-123 (was 7c24329).
+.EE
+.SH SEE ALSO
+.BR git (1),
+.BR git-fetch (1)
