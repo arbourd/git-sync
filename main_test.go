@@ -32,7 +32,9 @@ func runSync(t *testing.T) (string, error) {
 	}()
 
 	syncErr := sync()
-	w.Close()
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe: %v", err)
+	}
 	return ansi.ReplaceAllString(<-done, ""), syncErr
 }
 
