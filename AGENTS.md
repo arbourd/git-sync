@@ -11,6 +11,7 @@ go test -race ./...   # race detector (required by CI)
 golangci-lint run     # lint (CI job)
 govulncheck ./...     # known vulnerabilities (CI job)
 actionlint            # lint .github/workflows; run after changing anything there (local only; not run in CI)
+npx --yes --package renovate -- renovate-config-validator --strict   # run after changing .github/renovate.json
 ```
 
 ## Layout
