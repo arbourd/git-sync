@@ -17,7 +17,7 @@ actionlint
 
 The first three mirror the `test` job in `.github/workflows/ci.yml` (ubuntu/macOS/windows), which
 also runs `go test -v` and `./git-sync --version`. `golangci-lint` and `govulncheck` mirror the
-`lint` and `vulncheck` jobs; `actionlint` checks the workflows. Run all before considering a change done.
+`lint` and `vulncheck` jobs. Run all before considering a change done, and `actionlint` after any change under `.github/workflows`.
 
 ## Layout
 
