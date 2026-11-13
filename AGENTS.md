@@ -20,6 +20,7 @@ main.go / main_test.go     CLI entry point — processArgs (flags), sync() (fetc
 internal/gitw/             thin wrapper around git plumbing commands, built on go-git-cmd-wrapper
 internal/gittest/          harness for real, disposable git repos: gittest.NewBare(t) makes a bare remote, .Clone(t) clones it
 man/git-sync.1             Man page; shipped in release archives
+skills/git-sync/SKILL.md   Agent skill; update whenever the CLI's flags, output, or behavior change
 .github/workflows/ci.yml   CI: test, lint, vulncheck; goreleaser snapshot on branches, release on `v*` tags
 .goreleaser.yml            Release archives (LICENSE*, README*, man/*); ldflags `-s -w -X main.Version`
 .golangci.yml              golangci-lint config
@@ -27,7 +28,7 @@ man/git-sync.1             Man page; shipped in release archives
 
 ## CLI flags
 
-Parsed by hand in `processArgs`; don't use the stdlib `flag` package. Help and version win over every other argument before `--`; anything else is an error with usage appended. Update the `usage` const in `main.go` and `man/git-sync.1` together. `git sync --help` is intercepted by git (man page), so `-h` is the in-binary path.
+Parsed by hand in `processArgs`; don't use the stdlib `flag` package. Help and version win over every other argument before `--`; anything else is an error with usage appended. Update the `usage` const in `main.go`, `man/git-sync.1`, and `skills/git-sync/SKILL.md` together. `git sync --help` is intercepted by git (man page), so `-h` is the in-binary path.
 
 ## Hard constraints
 
