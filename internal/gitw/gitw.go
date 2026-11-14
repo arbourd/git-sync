@@ -238,13 +238,13 @@ func HasFile(segments ...string) bool {
 
 // RemoteFromHead gets the remote where the HEAD is.
 func RemoteFromHead() (string, error) {
-	// git branch -r
-	remotes, err := git.Branch(branch.Remotes)
+	// git branch -r --color=never
+	remotes, err := git.Branch(branch.Remotes, branch.Color("never"))
 	if err != nil {
 		return "", err
 	}
 
-	r := regexp.MustCompile(`([\w\d]+)\/HEAD`)
+	r := regexp.MustCompile(`(?m)^\s*(.+)/HEAD ->`)
 	match := r.FindStringSubmatch(remotes)
 
 	if len(match) < 2 {
