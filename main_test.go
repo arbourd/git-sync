@@ -15,7 +15,7 @@ var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 // runSync calls sync() from the current directory and returns its error along
 // with everything it printed to stdout, ANSI colors stripped.
-func runSync(t *testing.T) (string, error) {
+func runSync(t *testing.T, prune bool) (string, error) {
 	t.Helper()
 
 	r, w, err := os.Pipe()
@@ -32,7 +32,7 @@ func runSync(t *testing.T) (string, error) {
 		done <- string(b)
 	}()
 
-	syncErr := sync()
+	syncErr := sync(prune)
 	if err := w.Close(); err != nil {
 		t.Fatalf("close pipe: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestSync_FastForwardNonCurrentBranch(t *testing.T) {
 
 	local.Chdir(t)
 
-	out, err := runSync(t)
+	out, err := runSync(t, false)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -113,7 +113,7 @@ func TestSync_FastForwardBranchCheckedOutInOtherWorktree(t *testing.T) {
 	peer.Push(t, "origin", "main")
 
 	work.Chdir(t)
-	out, err := runSync(t)
+	out, err := runSync(t, false)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -141,7 +141,7 @@ func TestSync_UntrackedFileInOtherWorktreeDoesNotBlockFastForward(t *testing.T) 
 	}
 
 	work.Chdir(t)
-	out, err := runSync(t)
+	out, err := runSync(t, false)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -172,7 +172,7 @@ func TestSync_UntrackedFileCollisionInOtherWorktreeIsSkipped(t *testing.T) {
 	}
 
 	work.Chdir(t)
-	out, err := runSync(t)
+	out, err := runSync(t, false)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -198,7 +198,7 @@ func TestSync_DeletedCurrentBranchWithDefaultBranchHeldElsewhereIsKept(t *testin
 	peer.Git(t, "push", "origin", "--delete", "feature")
 
 	work.Chdir(t)
-	out, err := runSync(t)
+	out, err := runSync(t, true)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -241,7 +241,7 @@ func TestSync_UnavailableOtherWorktreeIsSkippedAndSyncContinues(t *testing.T) {
 			tt.setup(t, local)
 
 			work.Chdir(t)
-			out, err := runSync(t)
+			out, err := runSync(t, false)
 			if err != nil {
 				t.Fatalf("sync() error: %v\noutput: %s", err, out)
 			}
@@ -266,7 +266,7 @@ func TestSync_DeletedUpstreamBranchCheckedOutElsewhereIsKept(t *testing.T) {
 	peer.Git(t, "push", "origin", "--delete", "other-branch")
 
 	work.Chdir(t)
-	out, err := runSync(t)
+	out, err := runSync(t, true)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -295,7 +295,7 @@ func TestSync_FastForwardCurrentBranch(t *testing.T) {
 
 	local.Chdir(t)
 
-	out, err := runSync(t)
+	out, err := runSync(t, false)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -319,7 +319,7 @@ func TestSync_IdenticalBranchIsNoOp(t *testing.T) {
 
 	local.Chdir(t)
 
-	out, err := runSync(t)
+	out, err := runSync(t, false)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -350,7 +350,7 @@ func TestSync_DeletedUpstreamMergedBranchIsDeleted(t *testing.T) {
 
 	local.Chdir(t)
 
-	out, err := runSync(t)
+	out, err := runSync(t, true)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -391,7 +391,7 @@ func TestSync_DefaultBranchIsFastForwardedAfterPruningCurrentBranch(t *testing.T
 	peer.Push(t, "origin", "main")
 
 	local.Chdir(t)
-	out, err := runSync(t)
+	out, err := runSync(t, true)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -422,7 +422,7 @@ func TestSync_DeletedUpstreamUnmergedBranchWarnsAndKeeps(t *testing.T) {
 
 	local.Chdir(t)
 
-	out, err := runSync(t)
+	out, err := runSync(t, true)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -454,7 +454,7 @@ func TestSync_UntrackedBranchWithMatchingRemoteIsSynced(t *testing.T) {
 
 	local.Chdir(t)
 
-	out, err := runSync(t)
+	out, err := runSync(t, false)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -476,7 +476,7 @@ func TestSync_UntrackedBranchWithoutMatchingRemoteIsUntouched(t *testing.T) {
 
 	local.Chdir(t)
 
-	out, err := runSync(t)
+	out, err := runSync(t, false)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -511,7 +511,7 @@ func TestSync_ForceMovedTagIsIgnored(t *testing.T) {
 
 	local.Chdir(t)
 
-	if out, err := runSync(t); err != nil {
+	if out, err := runSync(t, false); err != nil {
 		t.Fatalf("sync() error: %v, want nil (force-moved tags should not fail sync)\noutput: %s", err, out)
 	}
 
@@ -532,7 +532,7 @@ func TestSync_UnpushedCommitsWarnsAndKeeps(t *testing.T) {
 
 	local.Chdir(t)
 
-	out, err := runSync(t)
+	out, err := runSync(t, false)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -563,7 +563,7 @@ func TestSync_DivergedBranchWarnsAndKeeps(t *testing.T) {
 
 	local.Chdir(t)
 
-	out, err := runSync(t)
+	out, err := runSync(t, false)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -594,7 +594,7 @@ func TestSync_DeletedUpstreamUnmergedCurrentBranchStays(t *testing.T) {
 
 	local.Chdir(t)
 
-	out, err := runSync(t)
+	out, err := runSync(t, true)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -640,7 +640,7 @@ func TestSync_MultipleBranchesAreHandledIndependently(t *testing.T) {
 
 	local.Chdir(t)
 
-	out, err := runSync(t)
+	out, err := runSync(t, true)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
@@ -672,7 +672,7 @@ func TestSync_NotAGitRepository(t *testing.T) {
 	gittest.NewBare(t) // isolates the git environment
 	gittest.Chdir(t, t.TempDir())
 
-	out, err := runSync(t)
+	out, err := runSync(t, false)
 	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
 		t.Fatalf("sync() error = %v, want %q\noutput: %s", err, "not a git repository", out)
 	}
@@ -686,7 +686,7 @@ func TestSync_NoRemoteFails(t *testing.T) {
 	wantSHA := local.Git(t, "rev-parse", "refs/heads/main")
 	local.Chdir(t)
 
-	if out, err := runSync(t); err == nil {
+	if out, err := runSync(t, false); err == nil {
 		t.Fatalf("sync() error = nil, want error for repo without a remote\noutput: %s", out)
 	}
 	if got := local.Git(t, "rev-parse", "refs/heads/main"); got != wantSHA {
@@ -706,7 +706,7 @@ func TestSync_FetchFailureReturnsErrorAndKeepsBranches(t *testing.T) {
 	local.Git(t, "remote", "set-url", "origin", local.Dir+"/does-not-exist")
 	local.Chdir(t)
 
-	if out, err := runSync(t); err == nil {
+	if out, err := runSync(t, false); err == nil {
 		t.Fatalf("sync() error = nil, want fetch error\noutput: %s", out)
 	}
 	if got := local.Git(t, "rev-parse", "refs/heads/main"); got != wantSHA {
@@ -714,19 +714,324 @@ func TestSync_FetchFailureReturnsErrorAndKeepsBranches(t *testing.T) {
 	}
 }
 
+func TestSync_DeletedUpstreamWithoutPruneKeepsBranch(t *testing.T) {
+	remote := gittest.NewBare(t)
+	peer := remote.Clone(t)
+	local := remote.Clone(t)
+
+	peer.CreateBranch(t, "feature")
+	peer.Push(t, "origin", "feature")
+	local.Git(t, "fetch", "origin")
+	local.Git(t, "branch", "--track", "feature", "origin/feature")
+	peer.Push(t, "origin", "--delete", "feature")
+
+	local.Chdir(t)
+
+	out, err := runSync(t, false)
+	if err != nil || strings.Contains(out, "Deleted") {
+		t.Fatalf("sync() = %v, output %q; want no deletion", err, out)
+	}
+	if want := "'feature' was deleted on origin"; !strings.Contains(out, want) {
+		t.Fatalf("output = %q, want a warning containing %q", out, want)
+	}
+	if got := local.Git(t, "for-each-ref", "refs/heads/feature"); got == "" {
+		t.Fatal("refs/heads/feature deleted without --prune")
+	}
+}
+
+func TestSync_DeletedUpstreamSquashOrRebaseMergedBranchIsDeleted(t *testing.T) {
+	for _, mode := range []string{"squash", "rebase"} {
+		t.Run(mode, func(t *testing.T) {
+			remote := gittest.NewBare(t)
+			peer := remote.Clone(t)
+			local := remote.Clone(t)
+
+			peer.CreateBranch(t, "feature")
+			peer.Checkout(t, "feature")
+			peer.Commit(t, "one")
+			peer.Commit(t, "two")
+			peer.Push(t, "origin", "feature")
+			local.Git(t, "fetch", "origin")
+			local.Git(t, "branch", "--track", "feature", "origin/feature")
+
+			// Land the work on main without a merge commit, then diverge main.
+			peer.Checkout(t, "main")
+			if mode == "squash" {
+				peer.Git(t, "merge", "--squash", "feature")
+				peer.Git(t, "commit", "-m", "squashed")
+			} else {
+				peer.Git(t, "cherry-pick", "feature~1", "feature")
+			}
+			peer.Commit(t, "later")
+			peer.Push(t, "origin", "main")
+			peer.Push(t, "origin", "--delete", "feature")
+
+			local.Chdir(t)
+
+			out, err := runSync(t, true)
+			if err != nil || !strings.Contains(out, "Deleted branch feature") {
+				t.Fatalf("sync() = %v, output %q; want feature deleted", err, out)
+			}
+		})
+	}
+}
+
+func TestSync_PruneKeepsBranchWithWorkOnlyInMergeCommit(t *testing.T) {
+	remote := gittest.NewBare(t)
+	peer := remote.Clone(t)
+	local := remote.Clone(t)
+
+	peer.CreateBranch(t, "feature")
+	peer.Checkout(t, "feature")
+	peer.Commit(t, "one")
+	peer.Checkout(t, "main")
+	peer.Commit(t, "other")
+	peer.Push(t, "origin", "main")
+
+	// Merge main into feature with extra work that exists only in the merge commit.
+	peer.Checkout(t, "feature")
+	peer.Git(t, "merge", "--no-ff", "--no-commit", "main")
+	writeFile(t, peer.Dir, "evil.txt", "only here")
+	peer.Git(t, "add", "evil.txt")
+	peer.Git(t, "commit", "-m", "merge main")
+	peer.Push(t, "origin", "feature")
+
+	local.Git(t, "fetch", "origin")
+	local.Git(t, "branch", "--track", "feature", "origin/feature")
+
+	// Land only the first commit on main, then delete the remote branch.
+	peer.Checkout(t, "main")
+	peer.Git(t, "cherry-pick", "feature^1")
+	peer.Push(t, "origin", "main")
+	peer.Push(t, "origin", "--delete", "feature")
+
+	local.Chdir(t)
+
+	out, err := runSync(t, true)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+	if got := local.Git(t, "for-each-ref", "refs/heads/feature"); got == "" {
+		t.Fatalf("feature deleted although evil.txt never reached main\noutput: %s", out)
+	}
+}
+
+func TestSync_PruneKeepsBranchWhoseCommitsNetToNothing(t *testing.T) {
+	remote := gittest.NewBare(t)
+	peer := remote.Clone(t)
+	local := remote.Clone(t)
+
+	peer.CreateBranch(t, "feature")
+	peer.Checkout(t, "feature")
+	peer.Commit(t, "add")
+	peer.Git(t, "revert", "--no-edit", "HEAD")
+	peer.Push(t, "origin", "feature")
+
+	local.Git(t, "fetch", "origin")
+	local.Git(t, "branch", "--track", "feature", "origin/feature")
+	peer.Push(t, "origin", "--delete", "feature")
+
+	local.Chdir(t)
+
+	out, err := runSync(t, true)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+	if got := local.Git(t, "for-each-ref", "refs/heads/feature"); got == "" {
+		t.Fatalf("feature deleted although none of its commits are on main\noutput: %s", out)
+	}
+}
+
+func TestSync_PruneDeletesSquashMergedBranchEditedLaterOnMain(t *testing.T) {
+	remote := gittest.NewBare(t)
+	peer := remote.Clone(t)
+	local := remote.Clone(t)
+
+	peer.CreateBranch(t, "feature")
+	peer.Checkout(t, "feature")
+	peer.Commit(t, "a.txt")
+	peer.Commit(t, "b.txt")
+	peer.Push(t, "origin", "feature")
+	local.Git(t, "fetch", "origin")
+	local.Git(t, "branch", "--track", "feature", "origin/feature")
+
+	peer.Checkout(t, "main")
+	peer.Git(t, "merge", "--squash", "feature")
+	peer.Git(t, "commit", "-m", "squashed")
+
+	// A later commit on main touches the same file the squash added.
+	writeFile(t, peer.Dir, "a.txt", "edited later")
+	peer.Git(t, "commit", "-am", "edit a.txt")
+	peer.Push(t, "origin", "main")
+	peer.Push(t, "origin", "--delete", "feature")
+
+	local.Chdir(t)
+
+	out, err := runSync(t, true)
+	if err != nil || !strings.Contains(out, "Deleted branch feature") {
+		t.Fatalf("sync() = %v, output %q; want feature deleted", err, out)
+	}
+}
+
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSync_PruneKeepsBranchWithDifferentWhitespaceEditOnMain(t *testing.T) {
+	remote := gittest.NewBare(t)
+	peer := remote.Clone(t)
+	writeFile(t, peer.Dir, "p.py", "if x:\n    y = 1\n")
+	peer.Git(t, "add", "p.py")
+	peer.Git(t, "commit", "-m", "base")
+	peer.Push(t, "origin", "main")
+	local := remote.Clone(t)
+
+	// feature and main indent the same line differently: only whitespace apart.
+	peer.CreateBranch(t, "feature")
+	peer.Checkout(t, "feature")
+	writeFile(t, peer.Dir, "p.py", "if x:\n        y = 1\n")
+	peer.Git(t, "commit", "-am", "indent 8")
+	peer.Push(t, "origin", "feature")
+	local.Git(t, "fetch", "origin")
+	local.Git(t, "branch", "--track", "feature", "origin/feature")
+
+	peer.Checkout(t, "main")
+	writeFile(t, peer.Dir, "p.py", "if x:\n  y = 1\n")
+	peer.Git(t, "commit", "-am", "indent 2")
+	peer.Push(t, "origin", "main")
+	peer.Push(t, "origin", "--delete", "feature")
+
+	local.Chdir(t)
+
+	out, err := runSync(t, true)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+	if got := local.Git(t, "for-each-ref", "refs/heads/feature"); got == "" {
+		t.Fatalf("feature deleted although its edit never reached main\noutput: %s", out)
+	}
+}
+
+func TestSync_PruneIgnoresMergeDrivers(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		inRepo  bool // committed .gitattributes, or $GIT_DIR/info/attributes
+		attribs string
+	}{
+		{"gitattributes", true, ".gitattributes"},
+		{"info attributes", false, ".git/info/attributes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remote := gittest.NewBare(t)
+			peer := remote.Clone(t)
+			if tc.inRepo {
+				writeFile(t, peer.Dir, tc.attribs, "CHANGELOG merge=ours\n")
+			}
+			writeFile(t, peer.Dir, "CHANGELOG", "base\n")
+			peer.Git(t, "add", ".")
+			peer.Git(t, "commit", "-m", "base")
+			peer.Push(t, "origin", "main")
+			local := remote.Clone(t)
+			local.Git(t, "config", "merge.ours.driver", "true")
+			if !tc.inRepo {
+				writeFile(t, local.Dir, tc.attribs, "CHANGELOG merge=ours\n")
+			}
+
+			peer.CreateBranch(t, "feature")
+			peer.Checkout(t, "feature")
+			writeFile(t, peer.Dir, "CHANGELOG", "feature entry\n")
+			peer.Git(t, "commit", "-am", "feature")
+			peer.Push(t, "origin", "feature")
+			local.Git(t, "fetch", "origin")
+			local.Git(t, "branch", "--track", "feature", "origin/feature")
+
+			peer.Checkout(t, "main")
+			writeFile(t, peer.Dir, "CHANGELOG", "main entry\n")
+			peer.Git(t, "commit", "-am", "main")
+			peer.Push(t, "origin", "main")
+			peer.Push(t, "origin", "--delete", "feature")
+
+			local.Chdir(t)
+
+			out, err := runSync(t, true)
+			if err != nil {
+				t.Fatalf("sync() error: %v\noutput: %s", err, out)
+			}
+			if got := local.Git(t, "for-each-ref", "refs/heads/feature"); got == "" {
+				t.Fatalf("feature deleted because a merge driver hid its conflict\noutput: %s", out)
+			}
+		})
+	}
+}
+
+func TestSync_PruneKeepsBranchWithRemoteButNoUpstream(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+
+	// branch.feature.remote is set but there is no branch.feature.merge, so it
+	// never had an upstream to lose.
+	local.CreateBranch(t, "feature")
+	local.Git(t, "config", "branch.feature.remote", "origin")
+	local.Chdir(t)
+
+	out, err := runSync(t, true)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+	if got := local.Git(t, "for-each-ref", "refs/heads/feature"); got == "" {
+		t.Fatalf("feature deleted although it never had an upstream\noutput: %s", out)
+	}
+}
+
+// Only the merge-tree check can recognise this: main's squash commit also holds
+// an unrelated edit, so no patch matches the branch's.
+func TestSync_PruneDeletesSquashMergedWithExtraEditsOnMain(t *testing.T) {
+	remote := gittest.NewBare(t)
+	peer := remote.Clone(t)
+	local := remote.Clone(t)
+
+	peer.CreateBranch(t, "feature")
+	peer.Checkout(t, "feature")
+	peer.Commit(t, "a.txt")
+	peer.Commit(t, "b.txt")
+	peer.Push(t, "origin", "feature")
+	local.Git(t, "fetch", "origin")
+	local.Git(t, "branch", "--track", "feature", "origin/feature")
+
+	peer.Checkout(t, "main")
+	peer.Git(t, "merge", "--squash", "feature")
+	writeFile(t, peer.Dir, "extra.txt", "edited while merging")
+	peer.Git(t, "add", "extra.txt")
+	peer.Git(t, "commit", "-m", "squashed with extras")
+	peer.Push(t, "origin", "main")
+	peer.Push(t, "origin", "--delete", "feature")
+
+	local.Chdir(t)
+
+	out, err := runSync(t, true)
+	if err != nil || !strings.Contains(out, "Deleted branch feature") {
+		t.Fatalf("sync() = %v, output %q; want feature deleted", err, out)
+	}
+}
+
 func TestProcessArgs(t *testing.T) {
 	tests := map[string]struct {
 		args       []string
-		wantDone   bool
+		want       options
 		wantStdout string
 		wantErr    string
 	}{
 		"no args":            {},
-		"help":               {args: []string{"-h"}, wantDone: true, wantStdout: usage + "\n"},
-		"long help":          {args: []string{"--help"}, wantDone: true, wantStdout: usage + "\n"},
-		"version":            {args: []string{"--version"}, wantDone: true, wantStdout: "git-sync dev\n"},
-		"short version":      {args: []string{"-v"}, wantDone: true, wantStdout: "git-sync dev\n"},
-		"help wins":          {args: []string{"--bogus", "-h", "-v"}, wantDone: true, wantStdout: usage + "\n"},
+		"prune":              {args: []string{"--prune"}, want: options{prune: true}},
+		"prune before --":    {args: []string{"--prune", "--"}, want: options{prune: true}},
+		"help":               {args: []string{"-h"}, want: options{done: true}, wantStdout: usage + "\n"},
+		"long help":          {args: []string{"--help"}, want: options{done: true}, wantStdout: usage + "\n"},
+		"version":            {args: []string{"--version"}, want: options{done: true}, wantStdout: "git-sync dev\n"},
+		"short version":      {args: []string{"-v"}, want: options{done: true}, wantStdout: "git-sync dev\n"},
+		"help wins":          {args: []string{"--bogus", "-h", "-v"}, want: options{done: true}, wantStdout: usage + "\n"},
 		"help after --":      {args: []string{"--", "-h"}, wantErr: `too many arguments: "-h"`},
 		"unknown long":       {args: []string{"--bogus"}, wantErr: `unknown option "--bogus"`},
 		"unknown short":      {args: []string{"-x"}, wantErr: `unknown option "-x"`},
@@ -738,9 +1043,9 @@ func TestProcessArgs(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			var out strings.Builder
-			done, err := processArgs(tt.args, &out)
-			if done != tt.wantDone {
-				t.Errorf("done = %v, want %v", done, tt.wantDone)
+			opts, err := processArgs(tt.args, &out)
+			if opts != tt.want {
+				t.Errorf("options = %+v, want %+v", opts, tt.want)
 			}
 			if out.String() != tt.wantStdout {
 				t.Errorf("stdout = %q, want %q", out.String(), tt.wantStdout)

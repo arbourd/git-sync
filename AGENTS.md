@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`git-sync` (module `github.com/arbourd/git-sync`) is a small Go CLI that fast-forwards or deletes local branches to match their remote counterparts. Invoked as `git sync`. Core logic lives in `sync()` in `main.go`; git plumbing is wrapped in `internal/gitw`.
+`git-sync` (module `github.com/arbourd/git-sync`) is a small Go CLI that fast-forwards local branches to match their remote counterparts. With `--prune` it also deletes merged branches whose upstream is gone. Invoked as `git sync`. Core logic lives in `sync()` in `main.go`; git plumbing is wrapped in `internal/gitw`.
 
 ## Commands
 
@@ -17,7 +17,7 @@ npx --yes --package renovate -- renovate-config-validator --strict   # run after
 ## Layout
 
 ```
-main.go / main_test.go     CLI entry point — processArgs (flags), sync() (fetch, then fast-forward, delete, or warn per local branch)
+main.go / main_test.go     CLI entry point — processArgs (flags), sync() (fetch, then fast-forward, warn, or with --prune delete per local branch)
 internal/gitw/             thin wrapper around git plumbing commands, built on go-git-cmd-wrapper
 internal/gittest/          harness for real, disposable git repos: gittest.NewBare(t) makes a bare remote, .Clone(t) clones it
 man/git-sync.1             Man page; shipped in release archives
@@ -41,13 +41,15 @@ Parsed by hand in `processArgs`; don't use the stdlib `flag` package. Help and v
 
 **Worktrees:** never `update-ref` a branch that any worktree has checked out; its index and files go stale and `git status` shows the new commit as staged reversals. `update()` fast-forwards inside the holding worktree (`gitw.FastForwardIn`) only if `gitw.IsClean`, otherwise it warns and continues. Untracked files don't count as dirty, since the merge itself refuses on a collision. If `prune()` switches the current branch, keep `s.worktrees` in step.
 
+**Prune:** deletion is opt-in (`--prune`) and must never lose work. `gitw.IsApplied` treats any failure as "keep"; it needs git 2.40 (`merge-tree --write-tree`). Add a test in `main_test.go` for any new merge shape, in both the delete and keep directions.
+
 ## Testing
 
 - Tests in `main_test.go` exercise `sync()` against **real git repositories**.
 - Build a bare remote, clone it once or twice (`local`, `peer`), drive state through `peer`, then call `sync()` from `local`'s working directory (`local.Chdir(t)`).
 - Assert on actual ref state (`local.Git(t, "rev-parse", ...)`).
 - Repos live in `t.TempDir()` and are isolated from the host's git config via `HOME`/`XDG_CONFIG_HOME`/`GIT_CONFIG_NOSYSTEM`.
-- `gittest.Repo.Commit` makes empty commits, which can't show stale files. Tests that assert index or working-tree state must commit a real file. `worktreeSetup` in `main_test.go` builds a clone plus a linked worktree.
+- `gittest.Repo.Commit` writes a file named after the message, so messages must be unique and path-safe. Tests that expect a delete must pass `prune=true` to `runSync`. `worktreeSetup` in `main_test.go` builds a clone plus a linked worktree.
 
 ## Do not
 

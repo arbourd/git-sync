@@ -29,6 +29,16 @@ Updated branch feature-123 (was 7c24329).
 | ------------------ | ---------------- |
 | `-h`, `--help`     | Show usage       |
 | `-v`, `--version`  | Show the version |
+| `--prune`          | Delete merged branches whose upstream is gone |
+
+Delete branches whose upstream is gone and whose work is already in the default branch, even if it was rebased or squashed.
+
+```console
+$ git sync --prune
+Deleted branch feature-123 (was 7c24329).
+```
+
+Without `--prune`, no branch is ever deleted. Requires git 2.40 or newer.
 
 ## License
 

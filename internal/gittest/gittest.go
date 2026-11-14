@@ -42,10 +42,15 @@ func (r *Repo) Clone(t testing.TB) *Repo {
 	return &Repo{Dir: dir}
 }
 
-// Commit creates an empty commit with msg and returns its full SHA.
+// Commit commits a new file named msg with msg as its message and returns the full SHA.
 func (r *Repo) Commit(t testing.TB, msg string) string {
 	t.Helper()
-	runIn(t, r.Dir, "commit", "--allow-empty", "-m", msg)
+	// Real content, so branches differ in tree and not only in history.
+	if err := os.WriteFile(filepath.Join(r.Dir, msg), []byte(msg), 0o644); err != nil {
+		t.Fatalf("gittest: %v", err)
+	}
+	runIn(t, r.Dir, "add", "--", msg)
+	runIn(t, r.Dir, "commit", "-m", msg)
 	return strings.TrimSpace(runIn(t, r.Dir, "rev-parse", "HEAD"))
 }
 
