@@ -407,20 +407,21 @@ func operationBranch(dir string) string {
 		return ""
 	}
 	for _, name := range []string{"rebase-merge/head-name", "rebase-apply/head-name"} {
-		if b, err := os.ReadFile(filepath.Join(gd, name)); err == nil {
-			if branch, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "refs/heads/"); ok {
-				return branch
-			}
+		if branch, ok := strings.CutPrefix(readTrimmed(gd, name), "refs/heads/"); ok {
+			return branch
 		}
 	}
 	// A SHA if bisecting from a detached HEAD, which matches no branch. BISECT_LOG tells a live bisect from a stale file.
 	if _, err := os.Stat(filepath.Join(gd, "BISECT_LOG")); err != nil {
 		return ""
 	}
-	if b, err := os.ReadFile(filepath.Join(gd, "BISECT_START")); err == nil {
-		return strings.TrimSpace(string(b))
-	}
-	return ""
+	return readTrimmed(gd, "BISECT_START")
+}
+
+// readTrimmed returns the trimmed contents of dir/name, or "" if it can't be read.
+func readTrimmed(dir, name string) string {
+	b, _ := os.ReadFile(filepath.Join(dir, name))
+	return strings.TrimSpace(string(b))
 }
 
 // IsClean reports whether the worktree at dir has no changes to tracked files and no operation in progress
@@ -504,50 +505,4 @@ func Toplevel() (string, error) {
 		return "", errors.New(out)
 	}
 	return strings.TrimSpace(out), nil
-}
-
-// ResetWorktree updates the index and files of the worktree at dir from oldSHA to newSHA, failing rather than
-// overwrite local changes or untracked files.
-func ResetWorktree(dir, oldSHA, newSHA string) error {
-	return readTree(dir, oldSHA, newSHA, false)
-}
-
-// CheckResetWorktree reports whether ResetWorktree would succeed, without changing anything.
-func CheckResetWorktree(dir, oldSHA, newSHA string) error {
-	return readTree(dir, oldSHA, newSHA, true)
-}
-
-func readTree(dir, oldSHA, newSHA string, dryRun bool) error {
-	// git -C <dir> update-index --refresh
-	// read-tree refuses a file that was only touched, and IsClean doesn't refresh the index.
-	if out, err := git.Raw("update-index", global.UpperC(dir), func(g *types.Cmd) {
-		g.AddOptions("--refresh")
-	}); err != nil {
-		return fmt.Errorf("refreshing index in %s: %s: %w", dir, strings.TrimSpace(out), err)
-	}
-
-	// git -C <dir> read-tree -m -u [-n] <oldSHA> <newSHA>
-	out, err := git.Raw("read-tree", global.UpperC(dir), func(g *types.Cmd) {
-		g.AddOptions("-m")
-		g.AddOptions("-u")
-		if dryRun {
-			g.AddOptions("-n")
-		}
-		g.AddOptions(oldSHA)
-		g.AddOptions(newSHA)
-	})
-	if err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(out), err)
-	}
-	return nil
-}
-
-// SamePath reports whether a and b are the same path, following symlinks.
-func SamePath(a, b string) bool {
-	if a == b {
-		return true
-	}
-	a, errA := filepath.EvalSymlinks(a)
-	b, errB := filepath.EvalSymlinks(b)
-	return errA == nil && errB == nil && a == b
 }

@@ -2,7 +2,9 @@ package gitw_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/arbourd/git-sync/internal/gittest"
@@ -301,7 +303,7 @@ func TestWorktrees(t *testing.T) {
 		t.Fatalf("Worktrees() error: %v", err)
 	}
 	for branch, want := range map[string]string{"main": local.Dir, "work": linked} {
-		if len(got[branch]) != 1 || !gitw.SamePath(got[branch][0], want) {
+		if len(got[branch]) != 1 || !samePath(got[branch][0], want) {
 			t.Errorf("Worktrees()[%q] = %q, want [%q]", branch, got[branch], want)
 		}
 	}
@@ -328,6 +330,9 @@ func TestWorktrees_SeveralHoldingOneBranch(t *testing.T) {
 }
 
 func TestWorktrees_PathWithNewline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows paths cannot contain a newline")
+	}
 	remote := gittest.NewBare(t)
 	local := remote.Clone(t)
 	local.Chdir(t)
@@ -339,31 +344,58 @@ func TestWorktrees_PathWithNewline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Worktrees() error: %v", err)
 	}
-	if len(got["work"]) != 1 || !gitw.SamePath(got["work"][0], linked) {
+	if len(got["work"]) != 1 || !samePath(got["work"][0], linked) {
 		t.Fatalf("Worktrees()[work] = %q, want [%q]", got["work"], linked)
 	}
 }
 
 func TestWorktrees_MidRebase(t *testing.T) {
-	remote := gittest.NewBare(t)
-	local := remote.Clone(t)
-	local.Chdir(t)
+	for _, backend := range []string{"--merge", "--apply"} {
+		t.Run(backend, func(t *testing.T) {
+			remote := gittest.NewBare(t)
+			local := remote.Clone(t)
+			local.Chdir(t)
 
-	local.CreateBranch(t, "feature")
-	local.Checkout(t, "feature")
-	local.Commit(t, "feature work")
-	local.Git(t, "-c", "sequence.editor=sed -i.bak s/^pick/edit/", "rebase", "-i", "main")
+			// Conflicting edits stop the rebase, leaving a detached HEAD and the backend's head-name file.
+			conflict := filepath.Join(local.Dir, "conflict")
+			edit := func(content string) {
+				if err := os.WriteFile(conflict, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				local.Git(t, "add", "conflict")
+				local.Git(t, "commit", "-m", content)
+			}
+			local.CreateBranch(t, "feature")
+			local.Checkout(t, "feature")
+			edit("feature")
+			local.Checkout(t, "main")
+			edit("main")
+			local.Checkout(t, "feature")
 
-	got, err := gitw.Worktrees()
-	if err != nil {
-		t.Fatalf("Worktrees() error: %v", err)
+			rebase := exec.Command("git", "rebase", backend, "main")
+			rebase.Dir = local.Dir
+			if err := rebase.Run(); err == nil {
+				t.Fatal("rebase succeeded, want a conflict")
+			}
+
+			got, err := gitw.Worktrees()
+			if err != nil {
+				t.Fatalf("Worktrees() error: %v", err)
+			}
+			if len(got["feature"]) != 1 || !samePath(got["feature"][0], local.Dir) {
+				t.Fatalf("Worktrees()[feature] = %q, want [%q]", got["feature"], local.Dir)
+			}
+			if gitw.IsClean(local.Dir) {
+				t.Error("IsClean() = true mid-rebase, want false")
+			}
+		})
 	}
-	if len(got["feature"]) != 1 || !gitw.SamePath(got["feature"][0], local.Dir) {
-		t.Fatalf("Worktrees()[feature] = %q, want [%q]", got["feature"], local.Dir)
-	}
-	if gitw.IsClean(local.Dir) {
-		t.Error("IsClean() = true mid-rebase, want false")
-	}
+}
+
+func samePath(a, b string) bool {
+	a, _ = filepath.EvalSymlinks(a)
+	b, _ = filepath.EvalSymlinks(b)
+	return a == b
 }
 
 func TestIsClean(t *testing.T) {
@@ -506,37 +538,11 @@ func TestWorktrees_MidBisect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Worktrees() error: %v", err)
 	}
-	if len(got["feature"]) != 1 || !gitw.SamePath(got["feature"][0], local.Dir) {
+	if len(got["feature"]) != 1 || !samePath(got["feature"][0], local.Dir) {
 		t.Fatalf("Worktrees()[feature] = %q, want [%q]", got["feature"], local.Dir)
 	}
 	if gitw.IsClean(local.Dir) {
 		t.Error("IsClean() = true mid-bisect, want false")
-	}
-}
-
-func TestWorktrees_MidRebaseApply(t *testing.T) {
-	remote := gittest.NewBare(t)
-	local := remote.Clone(t)
-	local.Chdir(t)
-
-	// Fake the state a stopped `git rebase --apply` leaves: a detached HEAD plus rebase-apply/head-name.
-	local.CreateBranch(t, "feature")
-	local.Checkout(t, "feature")
-	local.Git(t, "checkout", "--detach")
-	apply := filepath.Join(local.Dir, ".git", "rebase-apply")
-	if err := os.Mkdir(apply, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(apply, "head-name"), []byte("refs/heads/feature\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := gitw.Worktrees()
-	if err != nil {
-		t.Fatalf("Worktrees() error: %v", err)
-	}
-	if len(got["feature"]) != 1 || !gitw.SamePath(got["feature"][0], local.Dir) {
-		t.Fatalf("Worktrees()[feature] = %q, want [%q]", got["feature"], local.Dir)
 	}
 }
 

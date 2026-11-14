@@ -24,6 +24,13 @@ no branch is ever deleted.
 Branches with unpushed commits, and deleted branches that are not merged,
 are left alone and reported with a warning.
 .PP
+A branch checked out in another worktree, including one stopped mid-rebase or
+mid-bisect, is fast-forwarded there.
+If that worktree has changes to tracked files, or a rebase, bisect, merge,
+cherry-pick or revert in progress, the branch is left alone and reported with a
+warning.
+A branch checked out in several worktrees is always left alone.
+.PP
 Tags are neither fetched nor pruned.
 .PP
 Requires git 2.36 or newer.

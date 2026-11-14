@@ -98,6 +98,8 @@ type syncer struct {
 	worktrees     map[string][]string // branch -> paths of the worktrees holding it
 }
 
+func warnf(format string, a ...any) { fmt.Printf("warning: "+format+"\n", a...) }
+
 func sync(prune bool) error {
 	if !gitw.IsGitDir() {
 		return errors.New("not a git repository")
@@ -151,7 +153,7 @@ func sync(prune bool) error {
 		case gone && prune:
 			err = s.prune(branch)
 		case gone:
-			fmt.Printf("warning: '%s' was deleted on %s\n", branch, s.remote)
+			warnf("'%s' was deleted on %s", branch, s.remote)
 		}
 		if err != nil {
 			return err
@@ -189,56 +191,38 @@ func (s *syncer) update(branch, upstream string) error {
 	case diff.IsIdentical():
 		return nil
 	case !diff.IsAncestor():
-		fmt.Printf("warning: '%s' seems to contain unpushed commits\n", branch)
+		warnf("'%s' seems to contain unpushed commits", branch)
 		return nil
 	}
 
-	// A checked out branch must move inside its worktrees, or their indexes and files go stale.
-	if dirs := s.worktrees[branch]; len(dirs) == 0 {
+	// A checked out branch must move inside its worktree, or that worktree's index and files go stale.
+	// Several worktrees can hold one only through `worktree add --force`, so leave it alone.
+	switch dirs := s.worktrees[branch]; {
+	case len(dirs) == 0:
 		if err := gitw.UpdateRef(ref, upstream); err != nil {
 			return err
 		}
-	} else if !fastForwardIn(branch, upstream, diff, dirs) {
+	case len(dirs) > 1:
+		warnf("'%s' is checked out in several worktrees (%s), not updated", branch, strings.Join(dirs, ", "))
 		return nil
+	case !gitw.IsClean(dirs[0]):
+		warnf("'%s' not updated: %s has local changes or an operation in progress", branch, dirs[0])
+		return nil
+	default:
+		if err := gitw.FastForwardIn(dirs[0], upstream); err != nil {
+			warnf("'%s' not updated in %s: %s", branch, dirs[0], formatError(err))
+			return nil
+		}
 	}
 
 	fmt.Printf("%sUpdated branch %s%s%s (was %s).\n", green, lightGreen, branch, resetColor, shortSHA(diff.A))
 	return nil
 }
 
-// fastForwardIn moves branch to upstream in every worktree holding it. It warns and returns false if it
-// can't move the branch at all; once the ref has moved it returns true, warning for each worktree left stale.
-func fastForwardIn(branch, upstream string, diff *gitw.Range, dirs []string) bool {
-	for _, dir := range dirs {
-		if !gitw.IsClean(dir) {
-			fmt.Printf("warning: '%s' is checked out in %s and has local changes, an operation in progress, or is unavailable, not updated\n", branch, dir)
-			return false
-		}
-	}
-	// Dry run: untracked files don't make a worktree dirty, but would block its refresh once the ref has moved.
-	for _, dir := range dirs[1:] {
-		if err := gitw.CheckResetWorktree(dir, diff.A, diff.B); err != nil {
-			fmt.Printf("warning: '%s' could not be updated in %s: %s\n", branch, dir, formatError(err))
-			return false
-		}
-	}
-	// The first merge moves the shared ref; the rest only refresh their index and files.
-	if err := gitw.FastForwardIn(dirs[0], upstream); err != nil {
-		fmt.Printf("warning: '%s' could not be updated in %s: %s\n", branch, dirs[0], formatError(err))
-		return false
-	}
-	for _, dir := range dirs[1:] {
-		if err := gitw.ResetWorktree(dir, diff.A, diff.B); err != nil {
-			fmt.Printf("warning: '%s' was updated but %s is stale, run 'git reset --hard' there (discards local changes): %s\n", branch, dir, formatError(err))
-		}
-	}
-	return true
-}
-
 // elsewhere returns a worktree holding branch, ignoring the current one if branch is checked out there.
 func (s *syncer) elsewhere(branch string) (dir string, ok bool) {
 	for _, d := range s.worktrees[branch] {
-		if branch != s.currentBranch || !gitw.SamePath(d, s.dir) {
+		if branch != s.currentBranch || d != s.dir {
 			return d, true
 		}
 	}
@@ -254,19 +238,19 @@ func (s *syncer) prune(branch string) error {
 	}
 
 	if !diff.IsAncestor() && !gitw.IsApplied(localRef(branch), defaultRef) {
-		fmt.Printf("warning: '%s' was deleted on %s, but appears not merged into '%s'\n", branch, s.remote, s.defaultBranch)
+		warnf("'%s' was deleted on %s, but appears not merged into '%s'", branch, s.remote, s.defaultBranch)
 		return nil
 	}
 
 	if dir, ok := s.elsewhere(branch); ok {
-		fmt.Printf("warning: '%s' was deleted on %s, but is checked out in %s, not deleted\n", branch, s.remote, dir)
+		warnf("'%s' was deleted on %s, but is checked out in %s, not deleted", branch, s.remote, dir)
 		return nil
 	}
 
 	// Can't delete the checked out branch.
 	if branch == s.currentBranch {
 		if dir, ok := s.elsewhere(s.defaultBranch); ok {
-			fmt.Printf("warning: '%s' was deleted on %s, but '%s' is checked out in %s, not deleted\n", branch, s.remote, s.defaultBranch, dir)
+			warnf("'%s' was deleted on %s, but '%s' is checked out in %s, not deleted", branch, s.remote, s.defaultBranch, dir)
 			return nil
 		}
 		if err := gitw.Checkout(s.defaultBranch); err != nil {

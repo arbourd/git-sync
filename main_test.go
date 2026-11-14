@@ -5,10 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/arbourd/git-sync/internal/gittest"
 )
@@ -178,7 +178,7 @@ func TestSync_UntrackedFileCollisionInOtherWorktreeIsSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
-	if want := "warning: 'main' could not be updated in"; !strings.Contains(out, want) {
+	if want := "warning: 'main' not updated in"; !strings.Contains(out, want) {
 		t.Fatalf("output = %q, want it to contain %q", out, want)
 	}
 	if got := local.Git(t, "rev-parse", "refs/heads/main"); got != oldMain {
@@ -247,7 +247,7 @@ func TestSync_UnavailableOtherWorktreeIsSkippedAndSyncContinues(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sync() error: %v\noutput: %s", err, out)
 			}
-			if want := "warning: 'main' is checked out in"; !strings.Contains(out, want) {
+			if want := "warning: 'main' not updated: "; !strings.Contains(out, want) {
 				t.Fatalf("output = %q, want it to contain %q", out, want)
 			}
 			if got := local.Git(t, "rev-parse", "refs/heads/main"); got != oldMain {
@@ -1178,44 +1178,18 @@ func pushFile(t *testing.T, peer *gittest.Repo, branch, name string) {
 	peer.Push(t, "origin", branch)
 }
 
-func TestSync_BranchCheckedOutInSeveralWorktreesIsUpdatedInAll(t *testing.T) {
-	local, peer, work := worktreeSetup(t)
-	extra := addWorktree(t, local, "main")
-	pushFile(t, peer, "main", "f.txt")
-
-	work.Chdir(t)
-	out, err := runSync(t, false)
-	if err != nil {
-		t.Fatalf("sync() error: %v\noutput: %s", err, out)
-	}
-
-	for _, dir := range []string{local.Dir, extra.Dir} {
-		if got := (&gittest.Repo{Dir: dir}).Git(t, "status", "--porcelain"); got != "" {
-			t.Errorf("%s status = %q, want clean", dir, got)
-		}
-		if _, err := os.Stat(filepath.Join(dir, "f.txt")); err != nil {
-			t.Errorf("f.txt missing from %s: %v", dir, err)
-		}
-	}
-}
-
-func TestSync_DirtyWorktreeAmongSeveralBlocksUpdate(t *testing.T) {
+func TestSync_BranchCheckedOutInSeveralWorktreesIsNotUpdated(t *testing.T) {
 	local, peer, work := worktreeSetup(t)
 	oldMain := local.Git(t, "rev-parse", "refs/heads/main")
-	extra := addWorktree(t, local, "main")
+	addWorktree(t, local, "main")
 	pushFile(t, peer, "main", "f.txt")
-
-	if err := os.WriteFile(filepath.Join(extra.Dir, "README"), []byte("edit\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	extra.Git(t, "add", "README")
 
 	work.Chdir(t)
 	out, err := runSync(t, false)
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
-	if want := "warning: 'main' is checked out in"; !strings.Contains(out, want) {
+	if want := "warning: 'main' is checked out in several worktrees"; !strings.Contains(out, want) {
 		t.Fatalf("output = %q, want it to contain %q", out, want)
 	}
 	if got := local.Git(t, "rev-parse", "refs/heads/main"); got != oldMain {
@@ -1224,6 +1198,9 @@ func TestSync_DirtyWorktreeAmongSeveralBlocksUpdate(t *testing.T) {
 }
 
 func TestSync_WorktreePathWithNewlineIsUpdated(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows paths cannot contain a newline")
+	}
 	local, peer, _ := worktreeSetup(t)
 	dir := filepath.Join(t.TempDir(), "a\nb")
 	local.Git(t, "worktree", "add", dir, "other-branch")
@@ -1262,7 +1239,7 @@ func TestSync_MidRebaseWorktreeIsLeftAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
-	if want := "warning: 'other-branch' is checked out in"; !strings.Contains(out, want) {
+	if want := "warning: 'other-branch' not updated: "; !strings.Contains(out, want) {
 		t.Fatalf("output = %q, want it to contain %q", out, want)
 	}
 	if got := local.Git(t, "rev-parse", "refs/heads/other-branch"); got != oldOther {
@@ -1273,32 +1250,6 @@ func TestSync_MidRebaseWorktreeIsLeftAlone(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(rb.Dir, "g.txt")); err == nil {
 		t.Error("g.txt appeared in the rebasing worktree")
-	}
-}
-
-func TestSync_UntrackedCollisionInSecondWorktreeBlocksUpdate(t *testing.T) {
-	local, peer, work := worktreeSetup(t)
-	oldMain := local.Git(t, "rev-parse", "refs/heads/main")
-	extra := addWorktree(t, local, "main")
-	pushFile(t, peer, "main", "f.txt")
-
-	if err := os.WriteFile(filepath.Join(extra.Dir, "f.txt"), []byte("mine\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	work.Chdir(t)
-	out, err := runSync(t, false)
-	if err != nil {
-		t.Fatalf("sync() error: %v\noutput: %s", err, out)
-	}
-	if want := "warning: 'main' could not be updated in"; !strings.Contains(out, want) {
-		t.Fatalf("output = %q, want it to contain %q", out, want)
-	}
-	if got := local.Git(t, "rev-parse", "refs/heads/main"); got != oldMain {
-		t.Fatalf("main = %q, want unchanged %q", got, oldMain)
-	}
-	if got := local.Git(t, "status", "--porcelain"); got != "" {
-		t.Errorf("primary status = %q, want clean", got)
 	}
 }
 
@@ -1319,41 +1270,6 @@ func TestSync_DeletedBranchMidRebaseInCurrentWorktreeIsKept(t *testing.T) {
 	}
 	if want := "warning: 'feature' was deleted on origin"; !strings.Contains(out, want) {
 		t.Fatalf("output = %q, want it to contain %q", out, want)
-	}
-}
-
-func TestSync_TouchedFileInSecondWorktreeIsUpdated(t *testing.T) {
-	local, peer, work := worktreeSetup(t)
-	pushFile(t, peer, "main", "f.txt")
-	local.Git(t, "pull", "--ff-only")
-	extra := addWorktree(t, local, "main")
-
-	// Same content, newer mtime: the index entry is stale until refreshed.
-	f := filepath.Join(extra.Dir, "f.txt")
-	later := time.Now().Add(time.Hour)
-	if err := os.Chtimes(f, later, later); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(filepath.Join(peer.Dir, "f.txt"), []byte("changed\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	peer.Git(t, "commit", "-am", "change f")
-	peer.Push(t, "origin", "main")
-
-	work.Chdir(t)
-	out, err := runSync(t, false)
-	if err != nil {
-		t.Fatalf("sync() error: %v\noutput: %s", err, out)
-	}
-	if strings.Contains(out, "warning") {
-		t.Fatalf("output = %q, want no warning", out)
-	}
-	if b, _ := os.ReadFile(f); string(b) != "changed\n" {
-		t.Fatalf("f.txt = %q, want it updated", b)
-	}
-	if got := extra.Git(t, "status", "--porcelain"); got != "" {
-		t.Fatalf("extra status = %q, want clean", got)
 	}
 }
 
