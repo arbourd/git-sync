@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/arbourd/git-sync/internal/gitw"
 	"github.com/arbourd/git-sync/internal/gittest"
+	"github.com/arbourd/git-sync/internal/gitw"
 )
 
 func TestIsGitDir(t *testing.T) {
