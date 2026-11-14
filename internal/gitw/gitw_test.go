@@ -2,7 +2,9 @@ package gitw_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/arbourd/git-sync/internal/gittest"
@@ -301,15 +303,99 @@ func TestWorktrees(t *testing.T) {
 		t.Fatalf("Worktrees() error: %v", err)
 	}
 	for branch, want := range map[string]string{"main": local.Dir, "work": linked} {
-		gotDir, _ := filepath.EvalSymlinks(got[branch])
-		wantDir, _ := filepath.EvalSymlinks(want)
-		if gotDir != wantDir {
-			t.Errorf("Worktrees()[%q] = %q, want %q", branch, gotDir, wantDir)
+		if len(got[branch]) != 1 || !samePath(got[branch][0], want) {
+			t.Errorf("Worktrees()[%q] = %q, want [%q]", branch, got[branch], want)
 		}
 	}
 	if len(got) != 2 {
 		t.Errorf("Worktrees() = %v, want only main and work", got)
 	}
+}
+
+func TestWorktrees_SeveralHoldingOneBranch(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+	local.Chdir(t)
+
+	other := filepath.Join(t.TempDir(), "other")
+	local.Git(t, "worktree", "add", "--force", other, "main")
+
+	got, err := gitw.Worktrees()
+	if err != nil {
+		t.Fatalf("Worktrees() error: %v", err)
+	}
+	if len(got["main"]) != 2 {
+		t.Fatalf("Worktrees()[main] = %q, want both worktrees", got["main"])
+	}
+}
+
+func TestWorktrees_PathWithNewline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows paths cannot contain a newline")
+	}
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+	local.Chdir(t)
+
+	linked := filepath.Join(t.TempDir(), "a\nb")
+	local.Git(t, "worktree", "add", "-b", "work", linked, "main")
+
+	got, err := gitw.Worktrees()
+	if err != nil {
+		t.Fatalf("Worktrees() error: %v", err)
+	}
+	if len(got["work"]) != 1 || !samePath(got["work"][0], linked) {
+		t.Fatalf("Worktrees()[work] = %q, want [%q]", got["work"], linked)
+	}
+}
+
+func TestWorktrees_MidRebase(t *testing.T) {
+	for _, backend := range []string{"--merge", "--apply"} {
+		t.Run(backend, func(t *testing.T) {
+			remote := gittest.NewBare(t)
+			local := remote.Clone(t)
+			local.Chdir(t)
+
+			// Conflicting edits stop the rebase, leaving a detached HEAD and the backend's head-name file.
+			conflict := filepath.Join(local.Dir, "conflict")
+			edit := func(content string) {
+				if err := os.WriteFile(conflict, []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				local.Git(t, "add", "conflict")
+				local.Git(t, "commit", "-m", content)
+			}
+			local.CreateBranch(t, "feature")
+			local.Checkout(t, "feature")
+			edit("feature")
+			local.Checkout(t, "main")
+			edit("main")
+			local.Checkout(t, "feature")
+
+			rebase := exec.Command("git", "rebase", backend, "main")
+			rebase.Dir = local.Dir
+			if err := rebase.Run(); err == nil {
+				t.Fatal("rebase succeeded, want a conflict")
+			}
+
+			got, err := gitw.Worktrees()
+			if err != nil {
+				t.Fatalf("Worktrees() error: %v", err)
+			}
+			if len(got["feature"]) != 1 || !samePath(got["feature"][0], local.Dir) {
+				t.Fatalf("Worktrees()[feature] = %q, want [%q]", got["feature"], local.Dir)
+			}
+			if gitw.IsClean(local.Dir) {
+				t.Error("IsClean() = true mid-rebase, want false")
+			}
+		})
+	}
+}
+
+func samePath(a, b string) bool {
+	a, _ = filepath.EvalSymlinks(a)
+	b, _ = filepath.EvalSymlinks(b)
+	return a == b
 }
 
 func TestIsClean(t *testing.T) {
@@ -430,5 +516,64 @@ func TestDeleteBranch_Current(t *testing.T) {
 
 	if err := gitw.DeleteBranch("main"); err == nil {
 		t.Fatal("DeleteBranch() error = nil, want error for the checked out branch")
+	}
+}
+
+func TestWorktrees_MidBisect(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+	local.Chdir(t)
+
+	local.CreateBranch(t, "feature")
+	local.Checkout(t, "feature")
+	for _, msg := range []string{"one", "two", "three"} {
+		local.Commit(t, msg)
+	}
+	local.Git(t, "bisect", "start", "HEAD", "HEAD~3")
+	if got := local.Git(t, "rev-parse", "--abbrev-ref", "HEAD"); got != "HEAD" {
+		t.Fatalf("HEAD = %q, want detached by the bisect", got)
+	}
+
+	got, err := gitw.Worktrees()
+	if err != nil {
+		t.Fatalf("Worktrees() error: %v", err)
+	}
+	if len(got["feature"]) != 1 || !samePath(got["feature"][0], local.Dir) {
+		t.Fatalf("Worktrees()[feature] = %q, want [%q]", got["feature"], local.Dir)
+	}
+	if gitw.IsClean(local.Dir) {
+		t.Error("IsClean() = true mid-bisect, want false")
+	}
+}
+
+func TestIsClean_OperationInProgress(t *testing.T) {
+	for _, name := range []string{"rebase-merge", "rebase-apply", "BISECT_LOG", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"} {
+		t.Run(name, func(t *testing.T) {
+			remote := gittest.NewBare(t)
+			local := remote.Clone(t)
+
+			if err := os.WriteFile(filepath.Join(local.Dir, ".git", name), []byte("x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if gitw.IsClean(local.Dir) {
+				t.Errorf("IsClean() = true with %s present, want false", name)
+			}
+		})
+	}
+}
+
+func TestIsClean_PausedMerge(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+
+	local.CreateBranch(t, "feature")
+	local.Checkout(t, "feature")
+	local.Commit(t, "feature work")
+	local.Checkout(t, "main")
+	local.Commit(t, "main work")
+	local.Git(t, "merge", "--no-commit", "--no-ff", "feature")
+
+	if gitw.IsClean(local.Dir) {
+		t.Error("IsClean() = true during a paused merge, want false")
 	}
 }

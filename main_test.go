@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -177,7 +178,7 @@ func TestSync_UntrackedFileCollisionInOtherWorktreeIsSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
-	if want := "warning: 'main' could not be updated in"; !strings.Contains(out, want) {
+	if want := "warning: 'main' not updated in"; !strings.Contains(out, want) {
 		t.Fatalf("output = %q, want it to contain %q", out, want)
 	}
 	if got := local.Git(t, "rev-parse", "refs/heads/main"); got != oldMain {
@@ -246,7 +247,7 @@ func TestSync_UnavailableOtherWorktreeIsSkippedAndSyncContinues(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sync() error: %v\noutput: %s", err, out)
 			}
-			if want := "warning: 'main' is checked out in"; !strings.Contains(out, want) {
+			if want := "warning: 'main' not updated: "; !strings.Contains(out, want) {
 				t.Fatalf("output = %q, want it to contain %q", out, want)
 			}
 			if got := local.Git(t, "rev-parse", "refs/heads/main"); got != oldMain {
@@ -1155,5 +1156,141 @@ func TestProcessArgs(t *testing.T) {
 				t.Errorf("error missing usage text: %v", err)
 			}
 		})
+	}
+}
+
+// addWorktree adds a linked worktree on branch, even if it is already checked out elsewhere.
+func addWorktree(t *testing.T, repo *gittest.Repo, branch string) *gittest.Repo {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "extra")
+	repo.Git(t, "worktree", "add", "--force", dir, branch)
+	return &gittest.Repo{Dir: dir}
+}
+
+func pushFile(t *testing.T, peer *gittest.Repo, branch, name string) {
+	t.Helper()
+	peer.Checkout(t, branch)
+	if err := os.WriteFile(filepath.Join(peer.Dir, name), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	peer.Git(t, "add", name)
+	peer.Git(t, "commit", "-m", "add "+name)
+	peer.Push(t, "origin", branch)
+}
+
+func TestSync_BranchCheckedOutInSeveralWorktreesIsNotUpdated(t *testing.T) {
+	local, peer, work := worktreeSetup(t)
+	oldMain := local.Git(t, "rev-parse", "refs/heads/main")
+	addWorktree(t, local, "main")
+	pushFile(t, peer, "main", "f.txt")
+
+	work.Chdir(t)
+	out, err := runSync(t, false)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+	if want := "warning: 'main' is checked out in several worktrees"; !strings.Contains(out, want) {
+		t.Fatalf("output = %q, want it to contain %q", out, want)
+	}
+	if got := local.Git(t, "rev-parse", "refs/heads/main"); got != oldMain {
+		t.Fatalf("main = %q, want unchanged %q", got, oldMain)
+	}
+}
+
+func TestSync_WorktreePathWithNewlineIsUpdated(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows paths cannot contain a newline")
+	}
+	local, peer, _ := worktreeSetup(t)
+	dir := filepath.Join(t.TempDir(), "a\nb")
+	local.Git(t, "worktree", "add", dir, "other-branch")
+	pushFile(t, peer, "other-branch", "f.txt")
+
+	local.Chdir(t)
+	out, err := runSync(t, false)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+
+	if got := (&gittest.Repo{Dir: dir}).Git(t, "status", "--porcelain"); got != "" {
+		t.Errorf("status = %q, want clean", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "f.txt")); err != nil {
+		t.Errorf("f.txt missing from worktree: %v", err)
+	}
+}
+
+func TestSync_MidRebaseWorktreeIsLeftAlone(t *testing.T) {
+	local, peer, _ := worktreeSetup(t)
+	pushFile(t, peer, "other-branch", "f.txt")
+	local.Git(t, "fetch", "origin")
+	local.Git(t, "branch", "-f", "other-branch", "origin/other-branch")
+	local.Commit(t, "main moves on")
+
+	rb := &gittest.Repo{Dir: filepath.Join(t.TempDir(), "rb")}
+	local.Git(t, "worktree", "add", rb.Dir, "other-branch")
+	rb.Git(t, "-c", "sequence.editor=sed -i.bak s/^pick/edit/", "rebase", "-i", "main")
+	oldOther := local.Git(t, "rev-parse", "refs/heads/other-branch")
+
+	pushFile(t, peer, "other-branch", "g.txt")
+
+	local.Chdir(t)
+	out, err := runSync(t, false)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+	if want := "warning: 'other-branch' not updated: "; !strings.Contains(out, want) {
+		t.Fatalf("output = %q, want it to contain %q", out, want)
+	}
+	if got := local.Git(t, "rev-parse", "refs/heads/other-branch"); got != oldOther {
+		t.Fatalf("other-branch = %q, want unchanged %q", got, oldOther)
+	}
+	if got := rb.Git(t, "status", "--porcelain"); got != "" {
+		t.Errorf("rebasing worktree status = %q, want clean", got)
+	}
+	if _, err := os.Stat(filepath.Join(rb.Dir, "g.txt")); err == nil {
+		t.Error("g.txt appeared in the rebasing worktree")
+	}
+}
+
+func TestSync_DeletedBranchMidRebaseInCurrentWorktreeIsKept(t *testing.T) {
+	local, peer, _ := worktreeSetup(t)
+	peer.CreateBranch(t, "feature")
+	peer.Push(t, "origin", "feature")
+	local.Git(t, "fetch", "origin")
+	local.Git(t, "checkout", "-b", "feature", "--track", "origin/feature")
+	local.Commit(t, "feature work")
+	local.Git(t, "-c", "sequence.editor=sed -i.bak s/^pick/edit/", "rebase", "-i", "main")
+	peer.Push(t, "origin", "--delete", "feature")
+
+	local.Chdir(t)
+	out, err := runSync(t, true)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+	if want := "warning: 'feature' was deleted on origin"; !strings.Contains(out, want) {
+		t.Fatalf("output = %q, want it to contain %q", out, want)
+	}
+}
+
+func TestSync_DeletedBranchHeldByCurrentAndOtherWorktreeIsKept(t *testing.T) {
+	local, peer, _ := worktreeSetup(t)
+	peer.CreateBranch(t, "feature")
+	peer.Push(t, "origin", "feature")
+	local.Git(t, "fetch", "origin")
+	local.Git(t, "checkout", "-b", "feature", "--track", "origin/feature")
+	addWorktree(t, local, "feature")
+	peer.Push(t, "origin", "--delete", "feature")
+
+	local.Chdir(t)
+	out, err := runSync(t, true)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+	if want := "warning: 'feature' was deleted on origin, but is checked out in"; !strings.Contains(out, want) {
+		t.Fatalf("output = %q, want it to contain %q", out, want)
+	}
+	if got := local.Git(t, "for-each-ref", "refs/heads/feature"); got == "" {
+		t.Fatal("feature was deleted, want it kept")
 	}
 }
