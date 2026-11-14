@@ -39,12 +39,15 @@ Parsed by hand in `processArgs`; don't use the stdlib `flag` package. Help and v
 
 **Fetch:** run `git fetch` with `--no-tags --no-prune-tags`. A force-moved tag (e.g. a rolling "nightly" tag) makes `fetch.pruneTags` hard-fail and aborts the whole sync. See `TestSync_ForceMovedTagIsIgnored` and commit `c67dd55` before changing fetch behavior.
 
+**Worktrees:** never `update-ref` a branch that any worktree has checked out; its index and files go stale and `git status` shows the new commit as staged reversals. `update()` fast-forwards inside the holding worktree (`gitw.FastForwardIn`) only if `gitw.IsClean`, otherwise it warns and continues. Untracked files don't count as dirty, since the merge itself refuses on a collision. If `prune()` switches the current branch, keep `s.worktrees` in step.
+
 ## Testing
 
 - Tests in `main_test.go` exercise `sync()` against **real git repositories**.
 - Build a bare remote, clone it once or twice (`local`, `peer`), drive state through `peer`, then call `sync()` from `local`'s working directory (`local.Chdir(t)`).
 - Assert on actual ref state (`local.Git(t, "rev-parse", ...)`).
 - Repos live in `t.TempDir()` and are isolated from the host's git config via `HOME`/`XDG_CONFIG_HOME`/`GIT_CONFIG_NOSYSTEM`.
+- `gittest.Repo.Commit` makes empty commits, which can't show stale files. Tests that assert index or working-tree state must commit a real file. `worktreeSetup` in `main_test.go` builds a clone plus a linked worktree.
 
 ## Do not
 
