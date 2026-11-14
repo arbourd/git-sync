@@ -1,9 +1,14 @@
 package gitw
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ldez/go-git-cmd-wrapper/v2/branch"
@@ -55,6 +60,171 @@ func (r *Range) IsAncestor() bool {
 		g.AddOptions(r.B)
 	})
 	return err == nil
+}
+
+// IsApplied reports whether branch was rebased or squash merged into upstream.
+//
+// It errs towards false: a branch with no net change, or whose work can't be
+// matched to upstream, is kept. It requires git >= 2.40.
+func IsApplied(branch, upstream string) bool {
+	base, err := git.Raw("merge-base", func(g *types.Cmd) {
+		g.AddOptions(upstream)
+		g.AddOptions(branch)
+	})
+	if err != nil {
+		return false
+	}
+	base = strings.TrimSpace(base)
+
+	// No net change (such as add then revert): nothing here was applied.
+	_, err = git.Raw("diff", func(g *types.Cmd) {
+		g.AddOptions("--quiet")
+		g.AddOptions(base)
+		g.AddOptions(branch)
+	})
+	if err == nil {
+		return false
+	}
+
+	switch mergeResult(branch, upstream) {
+	case mergeSame:
+		return true
+	case mergeAdds, mergeUnavailable:
+		// Patch-ids ignore where a change lands, so they can't overrule the first,
+		// and can't stand in for a check that couldn't run.
+		return false
+	}
+
+	// The patch checks walk all history since the merge-base, so they go last.
+	ups, err := patchIDs("log", "-p", "--no-merges", base+".."+upstream)
+	if err != nil {
+		return false
+	}
+
+	// A rebase gives every commit of the branch an identical patch upstream.
+	// Merge commits have no patch of their own, so only branches without any qualify.
+	merges, err := git.Raw("rev-list", func(g *types.Cmd) {
+		g.AddOptions("--merges")
+		g.AddOptions(upstream + ".." + branch)
+	})
+	if err == nil && strings.TrimSpace(merges) == "" {
+		ids, err := patchIDs("log", "-p", "--no-merges", base+".."+branch)
+		if err == nil && len(ids) > 0 && !slices.ContainsFunc(ids, func(id string) bool { return !slices.Contains(ups, id) }) {
+			return true
+		}
+	}
+
+	// A squash commit has the same patch as the branch's net diff, even if later
+	// commits edited the same files.
+	net, err := patchIDs("diff", base, branch)
+	return err == nil && len(net) == 1 && slices.Contains(ups, net[0])
+}
+
+type mergeOutcome int
+
+const (
+	mergeConflict    mergeOutcome = iota // the merge conflicts: only patch-ids can tell
+	mergeSame                            // the merge yields upstream's own tree: nothing to add
+	mergeAdds                            // the merge is clean and changes upstream: branch has work it lacks
+	mergeUnavailable                     // the check couldn't run or can't be trusted
+)
+
+// mergeResult merges branch into upstream in memory and reports what that adds.
+//
+// The empty tree as attribute source and no global attributes file keep
+// merge drivers from resolving conflicts that would otherwise block it.
+// $GIT_DIR/info/attributes can't be turned off, so the check is unavailable
+// when it mentions a merge attribute.
+func mergeResult(branch, upstream string) mergeOutcome {
+	if hasInfoMergeAttributes() {
+		return mergeUnavailable
+	}
+
+	// git --attr-source=<empty tree> merge-tree --write-tree <upstream> <branch>
+	out, err := git.Raw("merge-tree", func(g *types.Cmd) {
+		g.AddBaseOptions("--attr-source=" + emptyTree)
+		g.AddBaseOptions("-c")
+		g.AddBaseOptions("core.attributesFile=" + os.DevNull)
+		g.AddOptions("--write-tree")
+		g.AddOptions(upstream)
+		g.AddOptions(branch)
+		g.Executor = executor("", "GIT_ATTR_NOSYSTEM=1")
+	})
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok && exitErr.ExitCode() == 1 {
+		return mergeConflict
+	}
+	if err != nil {
+		return mergeUnavailable // such as git older than 2.40
+	}
+	tree, err := git.RevParse(revparse.Quiet, revparse.Args(upstream+"^{tree}"))
+	if err != nil {
+		return mergeUnavailable
+	}
+	first, _, _ := strings.Cut(out, "\n")
+	if strings.TrimSpace(first) == strings.TrimSpace(tree) {
+		return mergeSame
+	}
+	return mergeAdds
+}
+
+// executor runs git with stdin and extra env, which the default executor can't.
+// It returns stdout only, so stderr warnings can't end up in diffs or tree ids.
+func executor(stdin string, env ...string) types.Executor {
+	return func(ctx context.Context, name string, _ bool, args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, name, args...)
+		cmd.Stdin = strings.NewReader(stdin)
+		cmd.Env = append(os.Environ(), env...)
+		out, err := cmd.Output()
+		return string(out), err
+	}
+}
+
+// hasInfoMergeAttributes reports whether $GIT_DIR/info/attributes mentions a merge attribute.
+// When unsure it says yes.
+func hasInfoMergeAttributes() bool {
+	// git rev-parse --git-path info/attributes
+	path, err := git.RevParse(revparse.GitPath("info/attributes"), git.CmdExecutor(executor("")))
+	if err != nil {
+		return true
+	}
+	content, err := os.ReadFile(strings.TrimSpace(path))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	return err != nil || strings.Contains(string(content), "merge")
+}
+
+// emptyTree is the well-known object id of the empty tree, which git always resolves.
+const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+// patchIDs returns the verbatim patch-id of each patch in the output of git cmd args.
+// Whitespace counts, so patches that differ only in whitespace don't match.
+//
+// shortcut: buffers the whole diff in memory, stream it if huge histories matter.
+func patchIDs(cmd string, args ...string) ([]string, error) {
+	diff, err := git.Raw(cmd, func(g *types.Cmd) {
+		for _, a := range slices.Concat([]string{"--no-ext-diff", "--no-textconv", "--no-color"}, args) {
+			g.AddOptions(a)
+		}
+		g.Executor = executor("")
+	})
+	if err != nil {
+		return nil, err
+	}
+	out, err := git.Raw("patch-id", func(g *types.Cmd) {
+		g.AddOptions("--verbatim")
+		g.Executor = executor(diff)
+	})
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, l := range outputLines(out) {
+		if f := strings.Fields(l); len(f) > 0 {
+			ids = append(ids, f[0])
+		}
+	}
+	return ids, nil
 }
 
 // HasFile reports whether the ref named by joining segments with "/" exists.
@@ -178,6 +348,16 @@ func Upstream(branch string) (string, error) {
 		return "", errors.New(out)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// HasMergeConfig reports whether branch has an upstream configured (branch.<name>.merge).
+func HasMergeConfig(branch string) bool {
+	// git config --get branch.<name>.merge
+	_, err := git.Raw("config", func(g *types.Cmd) {
+		g.AddOptions("--get")
+		g.AddOptions("branch." + branch + ".merge")
+	})
+	return err == nil
 }
 
 // Worktrees maps each checked out branch to its worktree path.
