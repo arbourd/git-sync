@@ -94,7 +94,8 @@ type syncer struct {
 	remote        string
 	defaultBranch string
 	currentBranch string
-	worktrees     map[string]string // branch -> worktree path
+	dir           string              // root of the current worktree
+	worktrees     map[string][]string // branch -> paths of the worktrees holding it
 }
 
 func sync(prune bool) error {
@@ -112,6 +113,8 @@ func sync(prune bool) error {
 		return err
 	}
 
+	dir, _ := gitw.Toplevel() // empty in a bare repo, where no worktree is current
+
 	worktrees, err := gitw.Worktrees()
 	if err != nil {
 		return err
@@ -121,6 +124,7 @@ func sync(prune bool) error {
 		remote:        remote,
 		defaultBranch: defaultBranch,
 		currentBranch: gitw.CurrentBranch(),
+		dir:           dir,
 		worktrees:     worktrees,
 	}
 
@@ -189,31 +193,56 @@ func (s *syncer) update(branch, upstream string) error {
 		return nil
 	}
 
-	// A checked out branch must move inside its worktree, or that worktree's index and files go stale.
-	dir, checkedOut := s.worktrees[branch]
-	switch {
-	case !checkedOut:
+	// A checked out branch must move inside its worktrees, or their indexes and files go stale.
+	if dirs := s.worktrees[branch]; len(dirs) == 0 {
 		if err := gitw.UpdateRef(ref, upstream); err != nil {
 			return err
 		}
-	case !gitw.IsClean(dir):
-		fmt.Printf("warning: '%s' is checked out in %s and has local changes or is unavailable, not updated\n", branch, dir)
+	} else if !fastForwardIn(branch, upstream, diff, dirs) {
 		return nil
-	default:
-		if err := gitw.FastForwardIn(dir, upstream); err != nil {
-			fmt.Printf("warning: '%s' could not be updated in %s: %s\n", branch, dir, formatError(err))
-			return nil
-		}
 	}
 
 	fmt.Printf("%sUpdated branch %s%s%s (was %s).\n", green, lightGreen, branch, resetColor, shortSHA(diff.A))
 	return nil
 }
 
-// elsewhere returns the worktree holding branch, if it isn't the current one.
+// fastForwardIn moves branch to upstream in every worktree holding it. It warns and returns false if it
+// can't move the branch at all; once the ref has moved it returns true, warning for each worktree left stale.
+func fastForwardIn(branch, upstream string, diff *gitw.Range, dirs []string) bool {
+	for _, dir := range dirs {
+		if !gitw.IsClean(dir) {
+			fmt.Printf("warning: '%s' is checked out in %s and has local changes, an operation in progress, or is unavailable, not updated\n", branch, dir)
+			return false
+		}
+	}
+	// Dry run: untracked files don't make a worktree dirty, but would block its refresh once the ref has moved.
+	for _, dir := range dirs[1:] {
+		if err := gitw.CheckResetWorktree(dir, diff.A, diff.B); err != nil {
+			fmt.Printf("warning: '%s' could not be updated in %s: %s\n", branch, dir, formatError(err))
+			return false
+		}
+	}
+	// The first merge moves the shared ref; the rest only refresh their index and files.
+	if err := gitw.FastForwardIn(dirs[0], upstream); err != nil {
+		fmt.Printf("warning: '%s' could not be updated in %s: %s\n", branch, dirs[0], formatError(err))
+		return false
+	}
+	for _, dir := range dirs[1:] {
+		if err := gitw.ResetWorktree(dir, diff.A, diff.B); err != nil {
+			fmt.Printf("warning: '%s' was updated but %s is stale, run 'git reset --hard' there (discards local changes): %s\n", branch, dir, formatError(err))
+		}
+	}
+	return true
+}
+
+// elsewhere returns a worktree holding branch, ignoring the current one if branch is checked out there.
 func (s *syncer) elsewhere(branch string) (dir string, ok bool) {
-	dir, ok = s.worktrees[branch]
-	return dir, ok && branch != s.currentBranch
+	for _, d := range s.worktrees[branch] {
+		if branch != s.currentBranch || !gitw.SamePath(d, s.dir) {
+			return d, true
+		}
+	}
+	return "", false
 }
 
 // prune deletes branch if it is merged (including rebased or squashed) into the default branch.
@@ -244,7 +273,9 @@ func (s *syncer) prune(branch string) error {
 			return err
 		}
 		s.currentBranch = s.defaultBranch
-		s.worktrees[s.defaultBranch] = s.worktrees[branch]
+		if s.dir != "" {
+			s.worktrees[s.defaultBranch] = []string{s.dir}
+		}
 		delete(s.worktrees, branch)
 	}
 

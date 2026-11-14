@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -334,7 +335,7 @@ func Fetch(remote string) error {
 	noPruneTags := func(g *types.Cmd) { g.AddOptions("--no-prune-tags") }
 	out, err := git.Fetch(fetch.Prune, fetch.Progress, fetch.NoTags, noPruneTags, fetch.Remote(remote))
 	if err != nil {
-		return errors.New(out)
+		return fmt.Errorf("%s: %w", strings.TrimSpace(out), err)
 	}
 	return nil
 }
@@ -360,37 +361,88 @@ func HasMergeConfig(branch string) bool {
 	return err == nil
 }
 
-// Worktrees maps each checked out branch to its worktree path.
-func Worktrees() (map[string]string, error) {
-	// git worktree list --porcelain
-	out, err := git.Worktree(worktree.List, worktree.Porcelain)
+// Worktrees maps each checked out branch to the paths of the worktrees holding it.
+// A worktree stopped mid-rebase or mid-bisect holds the branch it will return to.
+func Worktrees() (map[string][]string, error) {
+	// git worktree list --porcelain -z
+	out, err := git.Worktree(worktree.List, worktree.Porcelain, func(g *types.Cmd) { g.AddOptions("-z") })
 	if err != nil {
 		return nil, errors.New(out)
 	}
 
-	trees := map[string]string{}
+	trees := map[string][]string{}
 	var path string
-	for _, line := range outputLines(out) {
-		key, val, _ := strings.Cut(line, " ")
+	for field := range strings.SplitSeq(out, "\x00") {
+		key, val, _ := strings.Cut(field, " ")
 		switch key {
 		case "worktree":
 			path = val
 		case "branch":
 			if b, ok := strings.CutPrefix(val, "refs/heads/"); ok {
-				trees[b] = path
+				trees[b] = append(trees[b], path)
+			}
+		case "detached":
+			if b := operationBranch(path); b != "" {
+				trees[b] = append(trees[b], path)
 			}
 		}
 	}
 	return trees, nil
 }
 
-// IsClean reports whether the worktree at dir has no changes to tracked files (false if unreadable).
-// Untracked files are ignored: a fast-forward only fails on those if it would overwrite one.
+// gitDir returns the git directory of the worktree at dir.
+func gitDir(dir string) (string, error) {
+	// git -C <dir> rev-parse --absolute-git-dir
+	out, err := git.RevParse(global.UpperC(dir), revparse.Args("--absolute-git-dir"))
+	if err != nil {
+		return "", errors.New(out)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// operationBranch returns the branch a rebase or bisect in dir will return to, or "".
+func operationBranch(dir string) string {
+	gd, err := gitDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, name := range []string{"rebase-merge/head-name", "rebase-apply/head-name"} {
+		if b, err := os.ReadFile(filepath.Join(gd, name)); err == nil {
+			if branch, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "refs/heads/"); ok {
+				return branch
+			}
+		}
+	}
+	// A SHA if bisecting from a detached HEAD, which matches no branch. BISECT_LOG tells a live bisect from a stale file.
+	if _, err := os.Stat(filepath.Join(gd, "BISECT_LOG")); err != nil {
+		return ""
+	}
+	if b, err := os.ReadFile(filepath.Join(gd, "BISECT_START")); err == nil {
+		return strings.TrimSpace(string(b))
+	}
+	return ""
+}
+
+// IsClean reports whether the worktree at dir has no changes to tracked files and no operation in progress
+// (false if unreadable). Untracked files are ignored: a fast-forward only fails on those if it would overwrite one.
 func IsClean(dir string) bool {
+	if gd, err := gitDir(dir); err != nil || inProgress(gd) {
+		return false
+	}
 	// git -C <dir> --no-optional-locks status --porcelain --untracked-files=no
 	// No optional locks: don't contend for index.lock with whatever is running in dir.
 	out, err := git.Status(global.UpperC(dir), global.NoOptionalLocks, status.Porcelain(""), status.UntrackedFiles("no"))
 	return err == nil && strings.TrimSpace(out) == ""
+}
+
+// inProgress reports whether git dir gd has a rebase, bisect, merge, cherry-pick or revert underway.
+func inProgress(gd string) bool {
+	for _, name := range []string{"rebase-merge", "rebase-apply", "BISECT_LOG", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"} {
+		if _, err := os.Stat(filepath.Join(gd, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // FastForwardIn fast-forwards the worktree at dir to ref.
@@ -442,4 +494,60 @@ func outputLines(output string) []string {
 		return []string{}
 	}
 	return strings.Split(output, "\n")
+}
+
+// Toplevel returns the root of the current worktree.
+func Toplevel() (string, error) {
+	// git rev-parse --show-toplevel
+	out, err := git.RevParse(revparse.ShowToplevel)
+	if err != nil {
+		return "", errors.New(out)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// ResetWorktree updates the index and files of the worktree at dir from oldSHA to newSHA, failing rather than
+// overwrite local changes or untracked files.
+func ResetWorktree(dir, oldSHA, newSHA string) error {
+	return readTree(dir, oldSHA, newSHA, false)
+}
+
+// CheckResetWorktree reports whether ResetWorktree would succeed, without changing anything.
+func CheckResetWorktree(dir, oldSHA, newSHA string) error {
+	return readTree(dir, oldSHA, newSHA, true)
+}
+
+func readTree(dir, oldSHA, newSHA string, dryRun bool) error {
+	// git -C <dir> update-index --refresh
+	// read-tree refuses a file that was only touched, and IsClean doesn't refresh the index.
+	if out, err := git.Raw("update-index", global.UpperC(dir), func(g *types.Cmd) {
+		g.AddOptions("--refresh")
+	}); err != nil {
+		return fmt.Errorf("refreshing index in %s: %s: %w", dir, strings.TrimSpace(out), err)
+	}
+
+	// git -C <dir> read-tree -m -u [-n] <oldSHA> <newSHA>
+	out, err := git.Raw("read-tree", global.UpperC(dir), func(g *types.Cmd) {
+		g.AddOptions("-m")
+		g.AddOptions("-u")
+		if dryRun {
+			g.AddOptions("-n")
+		}
+		g.AddOptions(oldSHA)
+		g.AddOptions(newSHA)
+	})
+	if err != nil {
+		return fmt.Errorf("%s: %w", strings.TrimSpace(out), err)
+	}
+	return nil
+}
+
+// SamePath reports whether a and b are the same path, following symlinks.
+func SamePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	a, errA := filepath.EvalSymlinks(a)
+	b, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && a == b
 }

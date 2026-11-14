@@ -301,14 +301,68 @@ func TestWorktrees(t *testing.T) {
 		t.Fatalf("Worktrees() error: %v", err)
 	}
 	for branch, want := range map[string]string{"main": local.Dir, "work": linked} {
-		gotDir, _ := filepath.EvalSymlinks(got[branch])
-		wantDir, _ := filepath.EvalSymlinks(want)
-		if gotDir != wantDir {
-			t.Errorf("Worktrees()[%q] = %q, want %q", branch, gotDir, wantDir)
+		if len(got[branch]) != 1 || !gitw.SamePath(got[branch][0], want) {
+			t.Errorf("Worktrees()[%q] = %q, want [%q]", branch, got[branch], want)
 		}
 	}
 	if len(got) != 2 {
 		t.Errorf("Worktrees() = %v, want only main and work", got)
+	}
+}
+
+func TestWorktrees_SeveralHoldingOneBranch(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+	local.Chdir(t)
+
+	other := filepath.Join(t.TempDir(), "other")
+	local.Git(t, "worktree", "add", "--force", other, "main")
+
+	got, err := gitw.Worktrees()
+	if err != nil {
+		t.Fatalf("Worktrees() error: %v", err)
+	}
+	if len(got["main"]) != 2 {
+		t.Fatalf("Worktrees()[main] = %q, want both worktrees", got["main"])
+	}
+}
+
+func TestWorktrees_PathWithNewline(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+	local.Chdir(t)
+
+	linked := filepath.Join(t.TempDir(), "a\nb")
+	local.Git(t, "worktree", "add", "-b", "work", linked, "main")
+
+	got, err := gitw.Worktrees()
+	if err != nil {
+		t.Fatalf("Worktrees() error: %v", err)
+	}
+	if len(got["work"]) != 1 || !gitw.SamePath(got["work"][0], linked) {
+		t.Fatalf("Worktrees()[work] = %q, want [%q]", got["work"], linked)
+	}
+}
+
+func TestWorktrees_MidRebase(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+	local.Chdir(t)
+
+	local.CreateBranch(t, "feature")
+	local.Checkout(t, "feature")
+	local.Commit(t, "feature work")
+	local.Git(t, "-c", "sequence.editor=sed -i.bak s/^pick/edit/", "rebase", "-i", "main")
+
+	got, err := gitw.Worktrees()
+	if err != nil {
+		t.Fatalf("Worktrees() error: %v", err)
+	}
+	if len(got["feature"]) != 1 || !gitw.SamePath(got["feature"][0], local.Dir) {
+		t.Fatalf("Worktrees()[feature] = %q, want [%q]", got["feature"], local.Dir)
+	}
+	if gitw.IsClean(local.Dir) {
+		t.Error("IsClean() = true mid-rebase, want false")
 	}
 }
 
@@ -430,5 +484,90 @@ func TestDeleteBranch_Current(t *testing.T) {
 
 	if err := gitw.DeleteBranch("main"); err == nil {
 		t.Fatal("DeleteBranch() error = nil, want error for the checked out branch")
+	}
+}
+
+func TestWorktrees_MidBisect(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+	local.Chdir(t)
+
+	local.CreateBranch(t, "feature")
+	local.Checkout(t, "feature")
+	for _, msg := range []string{"one", "two", "three"} {
+		local.Commit(t, msg)
+	}
+	local.Git(t, "bisect", "start", "HEAD", "HEAD~3")
+	if got := local.Git(t, "rev-parse", "--abbrev-ref", "HEAD"); got != "HEAD" {
+		t.Fatalf("HEAD = %q, want detached by the bisect", got)
+	}
+
+	got, err := gitw.Worktrees()
+	if err != nil {
+		t.Fatalf("Worktrees() error: %v", err)
+	}
+	if len(got["feature"]) != 1 || !gitw.SamePath(got["feature"][0], local.Dir) {
+		t.Fatalf("Worktrees()[feature] = %q, want [%q]", got["feature"], local.Dir)
+	}
+	if gitw.IsClean(local.Dir) {
+		t.Error("IsClean() = true mid-bisect, want false")
+	}
+}
+
+func TestWorktrees_MidRebaseApply(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+	local.Chdir(t)
+
+	// Fake the state a stopped `git rebase --apply` leaves: a detached HEAD plus rebase-apply/head-name.
+	local.CreateBranch(t, "feature")
+	local.Checkout(t, "feature")
+	local.Git(t, "checkout", "--detach")
+	apply := filepath.Join(local.Dir, ".git", "rebase-apply")
+	if err := os.Mkdir(apply, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(apply, "head-name"), []byte("refs/heads/feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := gitw.Worktrees()
+	if err != nil {
+		t.Fatalf("Worktrees() error: %v", err)
+	}
+	if len(got["feature"]) != 1 || !gitw.SamePath(got["feature"][0], local.Dir) {
+		t.Fatalf("Worktrees()[feature] = %q, want [%q]", got["feature"], local.Dir)
+	}
+}
+
+func TestIsClean_OperationInProgress(t *testing.T) {
+	for _, name := range []string{"rebase-merge", "rebase-apply", "BISECT_LOG", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"} {
+		t.Run(name, func(t *testing.T) {
+			remote := gittest.NewBare(t)
+			local := remote.Clone(t)
+
+			if err := os.WriteFile(filepath.Join(local.Dir, ".git", name), []byte("x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if gitw.IsClean(local.Dir) {
+				t.Errorf("IsClean() = true with %s present, want false", name)
+			}
+		})
+	}
+}
+
+func TestIsClean_PausedMerge(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+
+	local.CreateBranch(t, "feature")
+	local.Checkout(t, "feature")
+	local.Commit(t, "feature work")
+	local.Checkout(t, "main")
+	local.Commit(t, "main work")
+	local.Git(t, "merge", "--no-commit", "--no-ff", "feature")
+
+	if gitw.IsClean(local.Dir) {
+		t.Error("IsClean() = true during a paused merge, want false")
 	}
 }

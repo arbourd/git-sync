@@ -10,6 +10,8 @@ Install with `brew`.
 $ brew install arbourd/tap/git-sync
 ```
 
+Requires git 2.36 or newer.
+
 ## Usage
 
 ```console
