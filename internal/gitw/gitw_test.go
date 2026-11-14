@@ -28,8 +28,31 @@ func TestIsGitDir_NotGitDir(t *testing.T) {
 }
 
 func TestRemoteFromHead(t *testing.T) {
+	for _, name := range []string{"origin", "my-fork", "a.b", "team/fork"} {
+		t.Run(name, func(t *testing.T) {
+			remote := gittest.NewBare(t)
+			local := remote.Clone(t)
+			if name != "origin" {
+				local.Git(t, "remote", "rename", "origin", name)
+				local.Git(t, "remote", "set-head", name, "main")
+			}
+			local.Chdir(t)
+
+			got, err := gitw.RemoteFromHead()
+			if err != nil {
+				t.Fatalf("RemoteFromHead() error: %v", err)
+			}
+			if got != name {
+				t.Fatalf("RemoteFromHead() = %q, want %q", got, name)
+			}
+		})
+	}
+}
+
+func TestRemoteFromHead_ColorAlways(t *testing.T) {
 	remote := gittest.NewBare(t)
 	local := remote.Clone(t)
+	local.Git(t, "config", "color.branch", "always")
 	local.Chdir(t)
 
 	got, err := gitw.RemoteFromHead()
