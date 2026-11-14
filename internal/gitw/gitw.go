@@ -11,9 +11,12 @@ import (
 	"github.com/ldez/go-git-cmd-wrapper/v2/config"
 	"github.com/ldez/go-git-cmd-wrapper/v2/fetch"
 	"github.com/ldez/go-git-cmd-wrapper/v2/git"
+	"github.com/ldez/go-git-cmd-wrapper/v2/global"
 	"github.com/ldez/go-git-cmd-wrapper/v2/merge"
 	"github.com/ldez/go-git-cmd-wrapper/v2/revparse"
+	"github.com/ldez/go-git-cmd-wrapper/v2/status"
 	"github.com/ldez/go-git-cmd-wrapper/v2/types"
+	"github.com/ldez/go-git-cmd-wrapper/v2/worktree"
 )
 
 // NewRange resolves a and b to a Range.
@@ -177,10 +180,43 @@ func Upstream(branch string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// FastForwardCurrent fast-forwards the checked out branch to ref.
-func FastForwardCurrent(ref string) error {
-	// git merge --ff-only --quiet <ref>
-	out, err := git.Merge(merge.FfOnly, merge.Quiet, merge.Commits(ref))
+// Worktrees maps each checked out branch to its worktree path.
+func Worktrees() (map[string]string, error) {
+	// git worktree list --porcelain
+	out, err := git.Worktree(worktree.List, worktree.Porcelain)
+	if err != nil {
+		return nil, errors.New(out)
+	}
+
+	trees := map[string]string{}
+	var path string
+	for _, line := range outputLines(out) {
+		key, val, _ := strings.Cut(line, " ")
+		switch key {
+		case "worktree":
+			path = val
+		case "branch":
+			if b, ok := strings.CutPrefix(val, "refs/heads/"); ok {
+				trees[b] = path
+			}
+		}
+	}
+	return trees, nil
+}
+
+// IsClean reports whether the worktree at dir has no changes to tracked files (false if unreadable).
+// Untracked files are ignored: a fast-forward only fails on those if it would overwrite one.
+func IsClean(dir string) bool {
+	// git -C <dir> --no-optional-locks status --porcelain --untracked-files=no
+	// No optional locks: don't contend for index.lock with whatever is running in dir.
+	out, err := git.Status(global.UpperC(dir), global.NoOptionalLocks, status.Porcelain(""), status.UntrackedFiles("no"))
+	return err == nil && strings.TrimSpace(out) == ""
+}
+
+// FastForwardIn fast-forwards the worktree at dir to ref.
+func FastForwardIn(dir, ref string) error {
+	// git -C <dir> merge --ff-only --quiet <ref>
+	out, err := git.Merge(global.UpperC(dir), merge.FfOnly, merge.Quiet, merge.Commits(ref))
 	if err != nil {
 		return errors.New(out)
 	}

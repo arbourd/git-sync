@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -72,6 +73,207 @@ func TestSync_FastForwardNonCurrentBranch(t *testing.T) {
 	if got := local.Git(t, "rev-parse", "--abbrev-ref", "HEAD"); got != "main" {
 		t.Fatalf("current branch = %q, want %q (should not switch)", got, "main")
 	}
+}
+
+// worktreeSetup returns a clone holding main, plus a linked worktree to sync from.
+// "other-branch" sorts after main so tests can check sync keeps going.
+func worktreeSetup(t *testing.T) (local, peer, work *gittest.Repo) {
+	t.Helper()
+	remote := gittest.NewBare(t)
+	local = remote.Clone(t)
+	peer = remote.Clone(t)
+
+	peer.CreateBranch(t, "other-branch")
+	peer.Push(t, "origin", "other-branch")
+	local.Git(t, "fetch", "origin")
+	local.Git(t, "branch", "--track", "other-branch", "origin/other-branch")
+
+	dir := filepath.Join(t.TempDir(), "work")
+	local.Git(t, "worktree", "add", "-b", "work", dir, "main")
+	return local, peer, &gittest.Repo{Dir: dir}
+}
+
+func pushMainAndOther(t *testing.T, peer *gittest.Repo) {
+	t.Helper()
+	peer.Commit(t, "main more")
+	peer.Push(t, "origin", "main")
+	peer.Checkout(t, "other-branch")
+	peer.Commit(t, "other more")
+	peer.Push(t, "origin", "other-branch")
+}
+
+func TestSync_FastForwardBranchCheckedOutInOtherWorktree(t *testing.T) {
+	local, peer, work := worktreeSetup(t)
+
+	if err := os.WriteFile(filepath.Join(peer.Dir, "f.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	peer.Git(t, "add", "f.txt")
+	peer.Git(t, "commit", "-m", "add f")
+	peer.Push(t, "origin", "main")
+
+	work.Chdir(t)
+	out, err := runSync(t)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+
+	if got := local.Git(t, "status", "--porcelain"); got != "" {
+		t.Fatalf("primary worktree status = %q, want clean", got)
+	}
+	if _, err := os.Stat(filepath.Join(local.Dir, "f.txt")); err != nil {
+		t.Fatalf("f.txt missing from primary worktree: %v", err)
+	}
+}
+
+func TestSync_UntrackedFileInOtherWorktreeDoesNotBlockFastForward(t *testing.T) {
+	local, peer, work := worktreeSetup(t)
+
+	if err := os.WriteFile(filepath.Join(peer.Dir, "f.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	peer.Git(t, "add", "f.txt")
+	peer.Git(t, "commit", "-m", "add f")
+	peer.Push(t, "origin", "main")
+
+	if err := os.WriteFile(filepath.Join(local.Dir, "junk"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	work.Chdir(t)
+	out, err := runSync(t)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+
+	if _, err := os.Stat(filepath.Join(local.Dir, "f.txt")); err != nil {
+		t.Fatalf("f.txt missing from primary worktree: %v", err)
+	}
+	if got := local.Git(t, "status", "--porcelain"); got != "?? junk" {
+		t.Fatalf("primary status = %q, want only the untracked file", got)
+	}
+}
+
+func TestSync_UntrackedFileCollisionInOtherWorktreeIsSkipped(t *testing.T) {
+	local, peer, work := worktreeSetup(t)
+	oldMain := local.Git(t, "rev-parse", "refs/heads/main")
+
+	if err := os.WriteFile(filepath.Join(peer.Dir, "f.txt"), []byte("upstream\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	peer.Git(t, "add", "f.txt")
+	peer.Git(t, "commit", "-m", "add f")
+	peer.Push(t, "origin", "main")
+
+	// Same path as the incoming file, so the merge must refuse.
+	mine := filepath.Join(local.Dir, "f.txt")
+	if err := os.WriteFile(mine, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	work.Chdir(t)
+	out, err := runSync(t)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+	if want := "warning: 'main' could not be updated in"; !strings.Contains(out, want) {
+		t.Fatalf("output = %q, want it to contain %q", out, want)
+	}
+	if got := local.Git(t, "rev-parse", "refs/heads/main"); got != oldMain {
+		t.Fatalf("main = %q, want unchanged %q", got, oldMain)
+	}
+	if b, _ := os.ReadFile(mine); string(b) != "mine\n" {
+		t.Fatalf("f.txt = %q, want it untouched", b)
+	}
+}
+
+func TestSync_DeletedCurrentBranchWithDefaultBranchHeldElsewhereIsKept(t *testing.T) {
+	local, peer, work := worktreeSetup(t)
+
+	// feature is merged, gone upstream, and current in work; main is held by local.
+	peer.CreateBranch(t, "feature")
+	peer.Push(t, "origin", "feature")
+	work.Git(t, "fetch", "origin")
+	work.Git(t, "checkout", "--quiet", "-b", "feature", "--track", "origin/feature")
+	peer.Git(t, "push", "origin", "--delete", "feature")
+
+	work.Chdir(t)
+	out, err := runSync(t)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+	if want := "warning: 'feature' was deleted on origin, but 'main' is checked out in"; !strings.Contains(out, want) {
+		t.Fatalf("output = %q, want it to contain %q", out, want)
+	}
+	if got := work.Git(t, "rev-parse", "--abbrev-ref", "HEAD"); got != "feature" {
+		t.Fatalf("work branch = %q, want %q (should stay)", got, "feature")
+	}
+	local.Git(t, "rev-parse", "--verify", "refs/heads/feature")
+}
+
+func TestSync_UnavailableOtherWorktreeIsSkippedAndSyncContinues(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, local *gittest.Repo)
+	}{
+		{"dirty", func(t *testing.T, local *gittest.Repo) {
+			if err := os.WriteFile(filepath.Join(local.Dir, "wip.txt"), []byte("wip\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			local.Git(t, "add", "wip.txt")
+		}},
+		{"missing directory", func(t *testing.T, local *gittest.Repo) {
+			// Give main its own worktree, then delete the directory.
+			gone := filepath.Join(t.TempDir(), "gone")
+			local.Git(t, "checkout", "--quiet", "--detach")
+			local.Git(t, "worktree", "add", gone, "main")
+			if err := os.RemoveAll(gone); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			local, peer, work := worktreeSetup(t)
+			oldMain := local.Git(t, "rev-parse", "refs/heads/main")
+			pushMainAndOther(t, peer)
+			tt.setup(t, local)
+
+			work.Chdir(t)
+			out, err := runSync(t)
+			if err != nil {
+				t.Fatalf("sync() error: %v\noutput: %s", err, out)
+			}
+			if want := "warning: 'main' is checked out in"; !strings.Contains(out, want) {
+				t.Fatalf("output = %q, want it to contain %q", out, want)
+			}
+			if got := local.Git(t, "rev-parse", "refs/heads/main"); got != oldMain {
+				t.Fatalf("main = %q, want unchanged %q", got, oldMain)
+			}
+			if got, want := local.Git(t, "rev-parse", "refs/heads/other-branch"), peer.Git(t, "rev-parse", "HEAD"); got != want {
+				t.Fatalf("other-branch = %q, want %q (sync should continue)", got, want)
+			}
+		})
+	}
+}
+
+func TestSync_DeletedUpstreamBranchCheckedOutElsewhereIsKept(t *testing.T) {
+	local, peer, work := worktreeSetup(t)
+
+	// other-branch is merged, gone upstream, and checked out in local.
+	local.Git(t, "checkout", "--quiet", "other-branch")
+	peer.Git(t, "push", "origin", "--delete", "other-branch")
+
+	work.Chdir(t)
+	out, err := runSync(t)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+	if want := "warning: 'other-branch' was deleted on origin, but is checked out in"; !strings.Contains(out, want) {
+		t.Fatalf("output = %q, want it to contain %q", out, want)
+	}
+	local.Git(t, "rev-parse", "--verify", "refs/heads/other-branch")
 }
 
 func TestSync_FastForwardCurrentBranch(t *testing.T) {
@@ -166,6 +368,39 @@ func TestSync_DeletedUpstreamMergedBranchIsDeleted(t *testing.T) {
 	branches := local.Git(t, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
 	if strings.Contains(branches, "feature") {
 		t.Fatalf("local branches = %q, want %q deleted", branches, "feature")
+	}
+}
+
+func TestSync_DefaultBranchIsFastForwardedAfterPruningCurrentBranch(t *testing.T) {
+	remote := gittest.NewBare(t)
+	peer := remote.Clone(t)
+	local := remote.Clone(t)
+
+	peer.CreateBranch(t, "feature")
+	peer.Push(t, "origin", "feature")
+	local.Git(t, "fetch", "origin")
+	local.Git(t, "checkout", "-b", "feature", "--track", "origin/feature")
+
+	// feature sorts before main, so it is pruned (switching to main) before main is updated.
+	peer.Push(t, "origin", "--delete", "feature")
+	if err := os.WriteFile(filepath.Join(peer.Dir, "f.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	peer.Git(t, "add", "f.txt")
+	peer.Git(t, "commit", "-m", "add f")
+	peer.Push(t, "origin", "main")
+
+	local.Chdir(t)
+	out, err := runSync(t)
+	if err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+
+	if _, err := os.Stat(filepath.Join(local.Dir, "f.txt")); err != nil {
+		t.Fatalf("f.txt missing after sync: %v", err)
+	}
+	if got := local.Git(t, "status", "--porcelain"); got != "" {
+		t.Fatalf("status = %q, want clean", got)
 	}
 }
 

@@ -1,6 +1,8 @@
 package gitw_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/arbourd/git-sync/internal/gitw"
@@ -226,7 +228,7 @@ func TestUpstream_NoUpstream(t *testing.T) {
 	}
 }
 
-func TestFastForwardCurrent(t *testing.T) {
+func TestFastForwardIn(t *testing.T) {
 	remote := gittest.NewBare(t)
 	local := remote.Clone(t)
 	peer := remote.Clone(t)
@@ -236,15 +238,15 @@ func TestFastForwardCurrent(t *testing.T) {
 	peer.Push(t, "origin", "main")
 	local.Git(t, "fetch", "origin")
 
-	if err := gitw.FastForwardCurrent("refs/remotes/origin/main"); err != nil {
-		t.Fatalf("FastForwardCurrent() error: %v", err)
+	if err := gitw.FastForwardIn(local.Dir, "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("FastForwardIn() error: %v", err)
 	}
 	if got := local.Git(t, "rev-parse", "HEAD"); got != sha {
 		t.Fatalf("HEAD = %q, want %q", got, sha)
 	}
 }
 
-func TestFastForwardCurrent_Diverged(t *testing.T) {
+func TestFastForwardIn_Diverged(t *testing.T) {
 	remote := gittest.NewBare(t)
 	local := remote.Clone(t)
 	peer := remote.Clone(t)
@@ -255,11 +257,60 @@ func TestFastForwardCurrent_Diverged(t *testing.T) {
 	local.Git(t, "fetch", "origin")
 	sha := local.Commit(t, "local work")
 
-	if err := gitw.FastForwardCurrent("refs/remotes/origin/main"); err == nil {
-		t.Fatal("FastForwardCurrent() error = nil, want error for diverged branch")
+	if err := gitw.FastForwardIn(local.Dir, "refs/remotes/origin/main"); err == nil {
+		t.Fatal("FastForwardIn() error = nil, want error for diverged branch")
 	}
 	if got := local.Git(t, "rev-parse", "HEAD"); got != sha {
 		t.Fatalf("HEAD = %q, want unchanged %q", got, sha)
+	}
+}
+
+func TestWorktrees(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+	local.Chdir(t)
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	local.Git(t, "worktree", "add", "-b", "work", linked, "main")
+
+	got, err := gitw.Worktrees()
+	if err != nil {
+		t.Fatalf("Worktrees() error: %v", err)
+	}
+	for branch, want := range map[string]string{"main": local.Dir, "work": linked} {
+		gotDir, _ := filepath.EvalSymlinks(got[branch])
+		wantDir, _ := filepath.EvalSymlinks(want)
+		if gotDir != wantDir {
+			t.Errorf("Worktrees()[%q] = %q, want %q", branch, gotDir, wantDir)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("Worktrees() = %v, want only main and work", got)
+	}
+}
+
+func TestIsClean(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+
+	if !gitw.IsClean(local.Dir) {
+		t.Error("IsClean() = false for a fresh clone, want true")
+	}
+
+	if err := os.WriteFile(filepath.Join(local.Dir, "junk"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !gitw.IsClean(local.Dir) {
+		t.Error("IsClean() = false with only an untracked file, want true")
+	}
+
+	local.Git(t, "add", "junk")
+	if gitw.IsClean(local.Dir) {
+		t.Error("IsClean() = true with a staged file, want false")
+	}
+
+	if gitw.IsClean(filepath.Join(local.Dir, "missing")) {
+		t.Error("IsClean() = true for a missing directory, want false")
 	}
 }
 
