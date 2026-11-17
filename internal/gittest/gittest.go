@@ -78,28 +78,10 @@ func (r *Repo) Git(t testing.TB, args ...string) string {
 	return strings.TrimSpace(runIn(t, r.Dir, args...))
 }
 
-// Chdir makes dir the process's cwd for the rest of the test.
-func Chdir(t testing.TB, dir string) {
-	t.Helper()
-
-	orig, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("gittest: os.Getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("gittest: os.Chdir(%s): %v", dir, err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(orig); err != nil {
-			t.Fatalf("gittest: restore os.Chdir(%s): %v", orig, err)
-		}
-	})
-}
-
 // Chdir makes r.Dir the process's cwd for the rest of the test.
 func (r *Repo) Chdir(t testing.TB) {
 	t.Helper()
-	Chdir(t, r.Dir)
+	t.Chdir(r.Dir)
 }
 
 // isolate pins git's environment to per-test temp locations.
@@ -115,13 +97,25 @@ func isolate(t testing.TB) {
 	t.Setenv("GIT_COMMITTER_NAME", "git-sync tests")
 	t.Setenv("GIT_COMMITTER_EMAIL", "git-sync-tests@example.com")
 	t.Setenv("GIT_TERMINAL_PROMPT", "0")
+	// Keep the host's repo and config out of the tests, e.g. when run from a git hook.
+	// The ceiling is this test's temp root, which holds every t.TempDir of the test, so
+	// discovery from any of them stops there. A test that never calls isolate gets no ceiling.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(home))
+	for _, k := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"} {
+		// Setenv first so the original value is restored when the test ends.
+		t.Setenv(k, "")
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatalf("gittest: %v", err)
+		}
+	}
 }
 
 func runIn(t testing.TB, dir string, args ...string) string {
 	t.Helper()
 
 	var stdout, stderr strings.Builder
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

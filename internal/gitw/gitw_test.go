@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/arbourd/git-sync/internal/gittest"
@@ -22,7 +23,8 @@ func TestIsGitDir(t *testing.T) {
 }
 
 func TestIsGitDir_NotGitDir(t *testing.T) {
-	gittest.Chdir(t, t.TempDir())
+	gittest.NewBare(t) // isolates the git environment, including the discovery ceiling
+	t.Chdir(t.TempDir())
 
 	if gitw.IsGitDir() {
 		t.Fatal("IsGitDir() = true, want false outside a git repo")
@@ -106,14 +108,9 @@ func TestLocalBranches(t *testing.T) {
 		t.Fatalf("LocalBranches() error: %v", err)
 	}
 
-	want := map[string]bool{"main": true, "feature-a": true, "feature-b": true}
-	if len(got) != len(want) {
+	slices.Sort(got)
+	if want := []string{"feature-a", "feature-b", "main"}; !slices.Equal(got, want) {
 		t.Fatalf("LocalBranches() = %v, want branches %v", got, want)
-	}
-	for _, b := range got {
-		if !want[b] {
-			t.Fatalf("LocalBranches() contained unexpected branch %q", b)
-		}
 	}
 }
 
@@ -372,7 +369,7 @@ func TestWorktrees_MidRebase(t *testing.T) {
 			edit("main")
 			local.Checkout(t, "feature")
 
-			rebase := exec.Command("git", "rebase", backend, "main")
+			rebase := exec.CommandContext(t.Context(), "git", "rebase", backend, "main")
 			rebase.Dir = local.Dir
 			if err := rebase.Run(); err == nil {
 				t.Fatal("rebase succeeded, want a conflict")
@@ -432,12 +429,14 @@ func TestUpdateRef(t *testing.T) {
 	local.Checkout(t, "feature")
 	sha := local.Commit(t, "feature work")
 	local.Checkout(t, "main")
+	// Not checked out anywhere: update-ref on a held branch would leave its index stale.
+	local.CreateBranch(t, "target")
 
-	if err := gitw.UpdateRef("refs/heads/main", "refs/heads/feature"); err != nil {
+	if err := gitw.UpdateRef("refs/heads/target", "refs/heads/feature"); err != nil {
 		t.Fatalf("UpdateRef() error: %v", err)
 	}
-	if got := local.Git(t, "rev-parse", "refs/heads/main"); got != sha {
-		t.Fatalf("main = %q, want %q", got, sha)
+	if got := local.Git(t, "rev-parse", "refs/heads/target"); got != sha {
+		t.Fatalf("target = %q, want %q", got, sha)
 	}
 }
 
@@ -552,8 +551,20 @@ func TestIsClean_OperationInProgress(t *testing.T) {
 			remote := gittest.NewBare(t)
 			local := remote.Clone(t)
 
-			if err := os.WriteFile(filepath.Join(local.Dir, ".git", name), []byte("x\n"), 0o644); err != nil {
-				t.Fatal(err)
+			if !gitw.IsClean(local.Dir) {
+				t.Fatal("IsClean() = false before the operation started, want true")
+			}
+			// Git keeps these three as directories; the rest are plain files.
+			marker := filepath.Join(local.Dir, ".git", name)
+			switch name {
+			case "rebase-merge", "rebase-apply", "sequencer":
+				if err := os.Mkdir(marker, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if err := os.WriteFile(marker, []byte("x\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if gitw.IsClean(local.Dir) {
 				t.Errorf("IsClean() = true with %s present, want false", name)
