@@ -97,7 +97,9 @@ func isolate(t testing.TB) {
 	t.Setenv("GIT_COMMITTER_NAME", "git-sync tests")
 	t.Setenv("GIT_COMMITTER_EMAIL", "git-sync-tests@example.com")
 	t.Setenv("GIT_TERMINAL_PROMPT", "0")
-	// Keep the host's repo, config and discovery out of the tests, e.g. when run from a git hook.
+	// Keep the host's repo and config out of the tests, e.g. when run from a git hook.
+	// The ceiling is this test's temp root, which holds every t.TempDir of the test, so
+	// discovery from any of them stops there. A test that never calls isolate gets no ceiling.
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(home))
 	for _, k := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"} {

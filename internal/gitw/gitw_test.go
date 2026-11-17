@@ -23,6 +23,7 @@ func TestIsGitDir(t *testing.T) {
 }
 
 func TestIsGitDir_NotGitDir(t *testing.T) {
+	gittest.NewBare(t) // isolates the git environment, including the discovery ceiling
 	t.Chdir(t.TempDir())
 
 	if gitw.IsGitDir() {
