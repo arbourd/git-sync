@@ -27,6 +27,8 @@ func runSync(t *testing.T, prune bool) (string, error) {
 	orig := os.Stdout
 	os.Stdout = w
 	defer func() { os.Stdout = orig }()
+	defer r.Close()
+	defer w.Close() // no-op after the explicit Close; unblocks the reader if sync panics
 
 	done := make(chan string)
 	go func() {
@@ -39,6 +41,23 @@ func runSync(t *testing.T, prune bool) (string, error) {
 		t.Fatalf("close pipe: %v", err)
 	}
 	return ansi.ReplaceAllString(<-done, ""), syncErr
+}
+
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pushFile commits a new file on branch in peer and pushes it.
+func pushFile(t *testing.T, peer *gittest.Repo, branch, name string) {
+	t.Helper()
+	peer.Checkout(t, branch)
+	writeFile(t, peer.Dir, name, "hi\n")
+	peer.Git(t, "add", name)
+	peer.Git(t, "commit", "-m", "add "+name)
+	peer.Push(t, "origin", branch)
 }
 
 func TestSync_FastForwardNonCurrentBranch(t *testing.T) {
@@ -107,19 +126,17 @@ func pushMainAndOther(t *testing.T, peer *gittest.Repo) {
 func TestSync_FastForwardBranchCheckedOutInOtherWorktree(t *testing.T) {
 	local, peer, work := worktreeSetup(t)
 
-	if err := os.WriteFile(filepath.Join(peer.Dir, "f.txt"), []byte("hi\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	peer.Git(t, "add", "f.txt")
-	peer.Git(t, "commit", "-m", "add f")
-	peer.Push(t, "origin", "main")
+	pushFile(t, peer, "main", "f.txt")
+	newSHA := peer.Git(t, "rev-parse", "HEAD")
 
 	work.Chdir(t)
-	out, err := runSync(t, false)
-	if err != nil {
+	if out, err := runSync(t, false); err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
 
+	if got := local.Git(t, "rev-parse", "refs/heads/main"); got != newSHA {
+		t.Fatalf("main = %q, want %q", got, newSHA)
+	}
 	if got := local.Git(t, "status", "--porcelain"); got != "" {
 		t.Fatalf("primary worktree status = %q, want clean", got)
 	}
@@ -131,20 +148,12 @@ func TestSync_FastForwardBranchCheckedOutInOtherWorktree(t *testing.T) {
 func TestSync_UntrackedFileInOtherWorktreeDoesNotBlockFastForward(t *testing.T) {
 	local, peer, work := worktreeSetup(t)
 
-	if err := os.WriteFile(filepath.Join(peer.Dir, "f.txt"), []byte("hi\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	peer.Git(t, "add", "f.txt")
-	peer.Git(t, "commit", "-m", "add f")
-	peer.Push(t, "origin", "main")
+	pushFile(t, peer, "main", "f.txt")
 
-	if err := os.WriteFile(filepath.Join(local.Dir, "junk"), []byte("x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, local.Dir, "junk", "x\n")
 
 	work.Chdir(t)
-	out, err := runSync(t, false)
-	if err != nil {
+	if out, err := runSync(t, false); err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
 
@@ -160,18 +169,14 @@ func TestSync_UntrackedFileCollisionInOtherWorktreeIsSkipped(t *testing.T) {
 	local, peer, work := worktreeSetup(t)
 	oldMain := local.Git(t, "rev-parse", "refs/heads/main")
 
-	if err := os.WriteFile(filepath.Join(peer.Dir, "f.txt"), []byte("upstream\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, peer.Dir, "f.txt", "upstream\n")
 	peer.Git(t, "add", "f.txt")
 	peer.Git(t, "commit", "-m", "add f")
 	peer.Push(t, "origin", "main")
 
 	// Same path as the incoming file, so the merge must refuse.
 	mine := filepath.Join(local.Dir, "f.txt")
-	if err := os.WriteFile(mine, []byte("mine\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, local.Dir, "f.txt", "mine\n")
 
 	work.Chdir(t)
 	out, err := runSync(t, false)
@@ -219,9 +224,7 @@ func TestSync_UnavailableOtherWorktreeIsSkippedAndSyncContinues(t *testing.T) {
 		setup func(t *testing.T, local *gittest.Repo)
 	}{
 		{"dirty", func(t *testing.T, local *gittest.Repo) {
-			if err := os.WriteFile(filepath.Join(local.Dir, "wip.txt"), []byte("wip\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			writeFile(t, local.Dir, "wip.txt", "wip\n")
 			local.Git(t, "add", "wip.txt")
 		}},
 		{"missing directory", func(t *testing.T, local *gittest.Repo) {
@@ -385,16 +388,10 @@ func TestSync_DefaultBranchIsFastForwardedAfterPruningCurrentBranch(t *testing.T
 
 	// feature sorts before main, so it is pruned (switching to main) before main is updated.
 	peer.Push(t, "origin", "--delete", "feature")
-	if err := os.WriteFile(filepath.Join(peer.Dir, "f.txt"), []byte("hi\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	peer.Git(t, "add", "f.txt")
-	peer.Git(t, "commit", "-m", "add f")
-	peer.Push(t, "origin", "main")
+	pushFile(t, peer, "main", "f.txt")
 
 	local.Chdir(t)
-	out, err := runSync(t, true)
-	if err != nil {
+	if out, err := runSync(t, true); err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
 
@@ -672,7 +669,7 @@ func TestSync_MultipleBranchesAreHandledIndependently(t *testing.T) {
 
 func TestSync_NotAGitRepository(t *testing.T) {
 	gittest.NewBare(t) // isolates the git environment
-	gittest.Chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
 
 	out, err := runSync(t, false)
 	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
@@ -872,13 +869,6 @@ func TestSync_PruneDeletesSquashMergedBranchEditedLaterOnMain(t *testing.T) {
 	out, err := runSync(t, true)
 	if err != nil || !strings.Contains(out, "Deleted branch feature") {
 		t.Fatalf("sync() = %v, output %q; want feature deleted", err, out)
-	}
-}
-
-func writeFile(t *testing.T, dir, name, content string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -1167,17 +1157,6 @@ func addWorktree(t *testing.T, repo *gittest.Repo, branch string) *gittest.Repo 
 	return &gittest.Repo{Dir: dir}
 }
 
-func pushFile(t *testing.T, peer *gittest.Repo, branch, name string) {
-	t.Helper()
-	peer.Checkout(t, branch)
-	if err := os.WriteFile(filepath.Join(peer.Dir, name), []byte("hi\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	peer.Git(t, "add", name)
-	peer.Git(t, "commit", "-m", "add "+name)
-	peer.Push(t, "origin", branch)
-}
-
 func TestSync_BranchCheckedOutInSeveralWorktreesIsNotUpdated(t *testing.T) {
 	local, peer, work := worktreeSetup(t)
 	oldMain := local.Git(t, "rev-parse", "refs/heads/main")
@@ -1207,8 +1186,7 @@ func TestSync_WorktreePathWithNewlineIsUpdated(t *testing.T) {
 	pushFile(t, peer, "other-branch", "f.txt")
 
 	local.Chdir(t)
-	out, err := runSync(t, false)
-	if err != nil {
+	if out, err := runSync(t, false); err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
 
@@ -1217,6 +1195,15 @@ func TestSync_WorktreePathWithNewlineIsUpdated(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "f.txt")); err != nil {
 		t.Errorf("f.txt missing from worktree: %v", err)
+	}
+}
+
+// stopRebase starts an interactive rebase onto main in repo and stops it at the first commit.
+func stopRebase(t *testing.T, repo *gittest.Repo) {
+	t.Helper()
+	repo.Git(t, "-c", "sequence.editor=sed -i.bak s/^pick/edit/", "rebase", "-i", "main")
+	if _, err := os.Stat(repo.Git(t, "rev-parse", "--path-format=absolute", "--git-path", "rebase-merge")); err != nil {
+		t.Fatalf("rebase did not stop: %v", err)
 	}
 }
 
@@ -1229,7 +1216,7 @@ func TestSync_MidRebaseWorktreeIsLeftAlone(t *testing.T) {
 
 	rb := &gittest.Repo{Dir: filepath.Join(t.TempDir(), "rb")}
 	local.Git(t, "worktree", "add", rb.Dir, "other-branch")
-	rb.Git(t, "-c", "sequence.editor=sed -i.bak s/^pick/edit/", "rebase", "-i", "main")
+	stopRebase(t, rb)
 	oldOther := local.Git(t, "rev-parse", "refs/heads/other-branch")
 
 	pushFile(t, peer, "other-branch", "g.txt")
@@ -1260,7 +1247,9 @@ func TestSync_DeletedBranchMidRebaseInCurrentWorktreeIsKept(t *testing.T) {
 	local.Git(t, "fetch", "origin")
 	local.Git(t, "checkout", "-b", "feature", "--track", "origin/feature")
 	local.Commit(t, "feature work")
-	local.Git(t, "-c", "sequence.editor=sed -i.bak s/^pick/edit/", "rebase", "-i", "main")
+	stopRebase(t, local)
+	// Merge feature into main while the rebase is stopped, so only the mid-rebase guard keeps it.
+	local.Git(t, "push", "origin", "refs/heads/feature:refs/heads/main")
 	peer.Push(t, "origin", "--delete", "feature")
 
 	local.Chdir(t)
@@ -1268,8 +1257,11 @@ func TestSync_DeletedBranchMidRebaseInCurrentWorktreeIsKept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync() error: %v\noutput: %s", err, out)
 	}
-	if want := "warning: 'feature' was deleted on origin"; !strings.Contains(out, want) {
+	if want := "warning: 'feature' was deleted on origin, but is checked out in"; !strings.Contains(out, want) {
 		t.Fatalf("output = %q, want it to contain %q", out, want)
+	}
+	if got := local.Git(t, "for-each-ref", "refs/heads/feature"); got == "" {
+		t.Fatal("feature was deleted, want it kept")
 	}
 }
 
