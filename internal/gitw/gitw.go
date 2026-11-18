@@ -259,6 +259,10 @@ func BranchesWithRemotes() (map[string]string, error) {
 	// git config --get-regexp 'branch.*.remote'
 	out, err := git.Config(config.GetRegexp("branch.*.remote", ""))
 	if err != nil {
+		// Exit 1 with no output means no branch has a remote configured.
+		if strings.TrimSpace(out) == "" {
+			return map[string]string{}, nil
+		}
 		return map[string]string{}, errors.New(out)
 	}
 	lines := outputLines(out)
