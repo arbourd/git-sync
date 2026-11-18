@@ -1286,3 +1286,25 @@ func TestSync_DeletedBranchHeldByCurrentAndOtherWorktreeIsKept(t *testing.T) {
 		t.Fatal("feature was deleted, want it kept")
 	}
 }
+
+func TestSync_NoTrackingConfigAtAll(t *testing.T) {
+	remote := gittest.NewBare(t)
+	local := remote.Clone(t)
+	peer := remote.Clone(t)
+
+	local.Git(t, "config", "--unset", "branch.main.remote")
+	local.Git(t, "config", "--unset", "branch.main.merge")
+
+	peer.Commit(t, "main more")
+	peer.Push(t, "origin", "main")
+	newSHA := peer.Git(t, "rev-parse", "HEAD")
+
+	local.Chdir(t)
+	if out, err := runSync(t, false); err != nil {
+		t.Fatalf("sync() error: %v\noutput: %s", err, out)
+	}
+
+	if got := local.Git(t, "rev-parse", "refs/heads/main"); got != newSHA {
+		t.Fatalf("main = %q, want %q", got, newSHA)
+	}
+}
