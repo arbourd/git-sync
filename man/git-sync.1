@@ -1,4 +1,4 @@
-.TH GIT-SYNC 1 "2026-11-10" "git-sync" "User Commands"
+.TH GIT-SYNC 1 "2026-11-18" "git-sync" "User Commands"
 .SH NAME
 git-sync \- update all local branches from their remotes
 .SH SYNOPSIS
@@ -6,52 +6,95 @@ git-sync \- update all local branches from their remotes
 .RI [ options ]
 .SH DESCRIPTION
 .B git-sync
-fetches and prunes the remote whose
+fetches from the remote whose
 .I <remote>/HEAD
 ref exists (usually
 .BR origin ),
-then walks every local branch.
-A branch that is behind its upstream, or behind the same-named branch on that
-remote, is fast-forwarded.
-A branch whose upstream was deleted is removed only with
-.BR \-\-prune ,
-and only if its changes are in the default branch, whether merged, rebased,
-or squashed (requires git 2.40 or newer).
-Without
-.BR \-\-prune ,
-no branch is ever deleted.
+then fast-forwards every local branch that is behind its upstream. A branch not
+tracking that remote is compared with the same-named branch on it.
 .PP
-Branches with unpushed commits, and deleted branches that are not merged,
-are left alone and reported with a warning.
-.PP
-A branch checked out in another worktree, including one stopped mid-rebase or
-mid-bisect, is fast-forwarded there.
-If that worktree has changes to tracked files, or a rebase, bisect, merge,
-cherry-pick or revert in progress, the branch is left alone and reported with a
-warning.
-A branch checked out in several worktrees is always left alone.
-.PP
-Tags are neither fetched nor pruned.
+Remote-tracking refs that no longer exist on the remote are pruned. Tags are
+neither fetched nor pruned. Without a
+.I <remote>/HEAD
+ref it fails with
+.BR "could not find a remote" ;
+create one with
+.BR "git remote set-head origin \-a" .
 .PP
 Requires git 2.36 or newer.
+.SH BRANCHES
+Each local branch is handled on its own. Warnings are not failures.
+.TP
+.B Behind its upstream
+Fast-forwarded, including the checked-out branch.
+.TP
+.B Unpushed or diverged
+Left alone with a warning. A diverged branch stays stale until it is rebased or
+merged by hand.
+.TP
+.B Upstream deleted
+Kept with a warning, unless
+.B \-\-prune
+is given.
+.TP
+.B Identical, or no matching remote branch
+Untouched.
+.SH WORKTREES
+A branch checked out in another worktree is fast-forwarded there, including one
+stopped mid-rebase or mid-bisect. It is left alone with a warning if that
+worktree has changes to tracked files, or a rebase, bisect, merge, cherry-pick
+or revert in progress, or if the fast-forward itself fails. Untracked files are
+ignored.
+.PP
+A branch checked out in several worktrees is always left alone with a warning.
 .SH OPTIONS
 .TP
 .B \-\-prune
-Delete merged branches whose upstream is gone.
+Delete branches whose upstream is gone, but only if their changes are already
+in the default branch, whether merged, rebased, or squashed. Requires git 2.40
+or newer. Anything that cannot be proven merged is kept with a warning.
+.IP
+Deletion is forced, with no prompt and no dry run. Restore a branch with
+.B git branch
+.I name sha
+using the
+.B was
+commit from the output. If the checked-out branch is deleted, the default
+branch is checked out first. A branch checked out in another worktree is kept,
+and so is the checked-out branch when the default branch is checked out in
+another worktree.
 .TP
 .BR \-h ", " \-\-help
-Print usage information and exit.
+Print usage information and exit. Git intercepts
+.B git sync \-\-help
+to show this page, so use
+.B \-h
+for the usage text.
 .TP
 .BR \-v ", " \-\-version
 Print the version and exit.
+.TP
+.B \-\-
+End of options. Any other argument is an error.
+.SH OUTPUT
+One line per change, giving the commit the branch was at before. Output always
+includes ANSI colour codes, and warnings are written to standard output.
+.SH EXIT STATUS
+Exits 0 on success, including with warnings. Any error exits 1 and prints a line
+beginning
+.B error:
+to standard error. The first error for a branch stops the run, so branches after
+it, in ASCII order, are not synced.
 .SH EXAMPLES
 .EX
 $ git sync
 Updated branch main (was 8915328).
-warning: 'feature-123' was deleted on origin
-$ git sync --prune
-Deleted branch feature-123 (was 7c24329).
+warning: 'feature\-123' was deleted on origin
+$ git sync \-\-prune
+Deleted branch feature\-123 (was 7c24329).
+$ git \-C ~/src/my\-repo sync
 .EE
 .SH SEE ALSO
 .BR git (1),
-.BR git-fetch (1)
+.BR git\-fetch (1),
+.BR git\-worktree (1)
